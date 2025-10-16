@@ -1,0 +1,22 @@
+[package]
+name = "ws-infer-scaffold"
+version = "0.1.0"
+edition = "2021"
+
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.7", features = ["ws", "json"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+crossterm = "0.27"        # for terminal control
+tui = "0.19"              # lightweight terminal UI library
+chrono = "0.4"            # for timestamps
+tokio-tungstenite = "0.28.0"
+futures-util = "0.3.31"
