@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-import socket, json, os, sys, torch, re
-from transformers import AutoTokenizer, AutoModelForCausalLM
+import socket, json, os, sys, torch
+from threading import Thread
+from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer
 
 if len(sys.argv) < 3:
     print("Usage: worker_mistral7b.py <SOCK_PATH> <MODEL_NAME>", flush=True)
@@ -22,48 +23,39 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map="auto"
 )
 model.eval()
-print(f"✅ Ready on {SOCK_PATH}", flush=True)
+print(f"✅ Ready and listening on {SOCK_PATH}", flush=True)
 
 
-def extract_all_json_arrays(text: str):
-    """Find every JSON array [ ... ] inside text and parse it."""
-    text = re.sub(r"```json|```", "", text, flags=re.I).strip()
-    arrays = re.findall(r"(\[.*?\])", text, re.S)
-    results = []
-    for arr in arrays:
-        try:
-            data = json.loads(arr)
-            if isinstance(data, list):
-                for d in data:
-                    if isinstance(d, dict) and "question" in d and "answer" in d:
-                        results.append(d)
-        except Exception:
-            continue
-    return results
+def stream_infer(prompt: str, conn, uid: str):
+    """Generate tokens incrementally and send JSON lines for each."""
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
 
-
-def infer(prompt: str):
-    """Run model and parse any JSON arrays in its response."""
-    instruction = (
-        "Generate 7 diverse question–answer pairs in pure JSON array format. "
-        "Each entry must have 'question' and 'answer' fields. "
-        "Return ONLY valid JSON arrays; multiple arrays are OK. No commentary.\n\n"
-    )
-
-    inputs = tokenizer(instruction + prompt, return_tensors="pt").to(device)
-    with torch.no_grad():
-        output = model.generate(
+    # Run model.generate in background thread so we can iterate stream live
+    thread = Thread(
+        target=model.generate,
+        kwargs=dict(
             **inputs,
-            max_new_tokens=1300,   # or even 1536 if VRAM allows
-            temperature=0.6,
+            streamer=streamer,
+            max_new_tokens=1024,
+            temperature=0.7,
             top_p=0.9,
-        )
+            do_sample=True,
+        ),
+    )
+    thread.start()
 
-    text = tokenizer.decode(output[0], skip_special_tokens=True)
-    qa_pairs = extract_all_json_arrays(text)
-    if not qa_pairs:
-        qa_pairs = [{"question": "Parse error", "answer": text.strip()}]
-    return qa_pairs, len(text.split())
+    try:
+        for new_text in streamer:
+            msg = json.dumps({"id": uid, "token": new_text})
+            print(f"🧩 Emitting: {repr(new_text)}", flush=True)   # debug
+            conn.sendall(msg.encode() + b"\n")
+    except Exception as e:
+        conn.sendall(json.dumps({"id": uid, "error": str(e)}).encode() + b"\n")
+
+    # tell Node that stream is complete
+    conn.sendall(json.dumps({"id": uid, "done": True}).encode() + b"\n")
+    thread.join()
 
 
 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
@@ -80,10 +72,6 @@ with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
                 req = json.loads(data.decode())
                 uid = req.get("id", "")
                 text = req.get("text", "")
-                output, tok = infer(text)
-                msg = json.dumps(
-                    {"id": uid, "output": output, "tokens": tok}, ensure_ascii=False
-                ).encode() + b"\n"
-                conn.sendall(msg)
+                stream_infer(text, conn, uid)
             except Exception as e:
                 conn.sendall(json.dumps({"error": str(e)}).encode() + b"\n")

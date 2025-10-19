@@ -1,13 +1,12 @@
 pub mod manager;
 pub use manager::spawn_workers_from_config;
-
-use tokio::process::Child;
-
+use tokio::{process::Child, sync::Mutex};
+use std::sync::Arc;
 #[derive(Debug)]
 pub struct Worker {
     pub name: String,
     pub socket_path: String,
-    pub process: Child,
+    pub process: Arc<Mutex<Child>>, // ✅ changed type
 }
 
 // manual clone (ignores the Child handle)
