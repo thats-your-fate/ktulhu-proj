@@ -1,71 +1,72 @@
 #!/usr/bin/env python3
 import socket, json, os, sys, torch, re
 from threading import Thread
-from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer
+from transformers import (
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    TextIteratorStreamer,
+    BitsAndBytesConfig,
+)
 
-if len(sys.argv) < 3:
-    print("Usage: worker_mistral7b.py <SOCK_PATH> <MODEL_NAME>", flush=True)
+if len(sys.argv) < 2:
+    print("Usage: worker_mistral13b.py <SOCK_PATH>", flush=True)
     sys.exit(1)
 
-SOCK_PATH, MODEL_NAME = sys.argv[1:3]
+SOCK_PATH = sys.argv[1]
+MODEL_NAME = "mistralai/Mistral-13B-Instruct-v0.1"
+
 try:
     os.remove(SOCK_PATH)
 except FileNotFoundError:
     pass
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"🧠 Loading {MODEL_NAME} on {device}...", flush=True)
+print(f"🧠 Loading {MODEL_NAME} (4-bit) on {device}...", flush=True)
+
+# ────────────────────────────────────────────────
+# 🧩 Quantized model load
+# ────────────────────────────────────────────────
+bnb_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_compute_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+)
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
-    torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-    device_map="auto"
+    quantization_config=bnb_config,
+    device_map="auto",
 )
 model.eval()
 print(f"✅ Ready and listening on {SOCK_PATH}", flush=True)
 
-
 # ────────────────────────────────────────────────
-# 🔧 Prompt preprocessing / normalization helpers
+# Prompt normalization & reasoning
 # ────────────────────────────────────────────────
-
 def normalize_prompt(raw: str) -> str:
-    """Clean whitespace, fix casing, remove duplicates, etc."""
     text = raw.strip()
     text = re.sub(r"\s+", " ", text)
-    # If it looks like a sentence fragment, add context
     if len(text.split()) < 5 and not text.endswith("?"):
         text = f"Write a short, clear explanation about {text.lower()}."
-    # Capitalize first letter if missing
     if text and text[0].islower():
         text = text[0].upper() + text[1:]
     return text
 
-
 def build_reasoning_prompt(user_text: str) -> str:
-    """
-    Add an invisible reasoning layer.
-    This gives the model clarity before generation, without showing it to the user.
-    """
     normalized = normalize_prompt(user_text)
-    meta_prefix = (
+    return (
         "You are an expert reasoning assistant. "
-        "First interpret the user's intent precisely, clarify ambiguous parts internally, "
-        "then produce a single clear, helpful answer.\n\n"
+        "First interpret the user's intent precisely, then produce a single clear answer.\n\n"
         f"User request: {normalized}\n\nResponse:"
     )
-    return meta_prefix
-
 
 # ────────────────────────────────────────────────
-# 🔁 Stream inference logic (unchanged structure)
+# Streaming inference logic
 # ────────────────────────────────────────────────
-
 def stream_infer(prompt: str, conn, uid: str):
-    """Generate tokens incrementally and send JSON lines for each."""
     final_prompt = build_reasoning_prompt(prompt)
-
     inputs = tokenizer(final_prompt, return_tensors="pt").to(device)
     streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
 
@@ -85,7 +86,6 @@ def stream_infer(prompt: str, conn, uid: str):
     try:
         for new_text in streamer:
             msg = json.dumps({"id": uid, "token": new_text})
-            print(f"🧩 Emitting: {repr(new_text)}", flush=True)
             conn.sendall(msg.encode() + b"\n")
     except Exception as e:
         conn.sendall(json.dumps({"id": uid, "error": str(e)}).encode() + b"\n")
@@ -93,11 +93,9 @@ def stream_infer(prompt: str, conn, uid: str):
     conn.sendall(json.dumps({"id": uid, "done": True}).encode() + b"\n")
     thread.join()
 
-
 # ────────────────────────────────────────────────
-# 🧩 Socket main loop
+# Socket main loop
 # ────────────────────────────────────────────────
-
 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
     server.bind(SOCK_PATH)
     server.listen(8)

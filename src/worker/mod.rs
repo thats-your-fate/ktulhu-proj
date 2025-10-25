@@ -6,7 +6,7 @@ use std::sync::Arc;
 pub struct Worker {
     pub name: String,
     pub socket_path: String,
-    pub process: Arc<Mutex<Child>>, // ✅ changed type
+    pub process: Arc<Mutex<Child>>, 
 }
 
 // manual clone (ignores the Child handle)
