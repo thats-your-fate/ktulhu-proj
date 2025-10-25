@@ -16,6 +16,7 @@ release/
 *.dylib
 node_modules
 yarn.lock
+node-v22.11.0-linux-x64
 # ==========================
 # 🐍 Python
 # ==========================
