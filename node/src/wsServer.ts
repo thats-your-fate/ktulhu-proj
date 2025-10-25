@@ -62,7 +62,7 @@ function startKafkaBridge() {
           ts,
           source: topic,
         },
-      };
+      };  
 
       const json = JSON.stringify(summary);
       const clients = deviceClients.get(device);
@@ -104,38 +104,33 @@ export async function startSocketServer(unixPath: string, port: number) {
     log.ok(` WebSocket client connected (port ${port}) → clientId=${clientId}`);
 
     ws.on("message", async (msg: WebSocket.RawData) => {
-  const raw = msg.toString();
+      const raw = msg.toString();
 
-  let data: any;
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    log.err("❌ Invalid JSON from WS client");
-    return;
-  }
+      let data: any;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        log.err("❌ Invalid JSON from WS client");
+        return;
+      }
 
-  // ✅ 1. Device registration — handle locally and stop
-  if (data.type === "register" && data.device_hash) {
-    const device = data.device_hash;
-    const set = deviceClients.get(device) || new Set<WebSocket>();
-    set.add(ws);
-    deviceClients.set(device, set);
-    (ws as any).deviceHash = device;
-    log.ok(`📱 Registered device hash: ${device}`);
-    return; // 🔥 stop here — do NOT forward to worker or Kafka
-  }
+      // ✅ Device registration
+      if (data.type === "register" && data.device_hash) {
+        const device = data.device_hash;
+        const set = deviceClients.get(device) || new Set<WebSocket>();
+        set.add(ws);
+        deviceClients.set(device, set);
+        (ws as any).deviceHash = device;
+        log.ok(`📱 Registered device hash: ${device}`);
+        return;
+      }
 
-  // ✅ 2. Ignore keep-alive / ping messages
-  if (data.type === "ping") {
-    return; // just silently ignore
-  }
+      // 🔄 Normal inference message handling
+      log.info(` From WS client (${clientId}) → worker [${unixPath}]: ${raw}`);
 
-  // ✅ 3. Normal inference message
-  log.info(` From WS client (${clientId}) → worker [${unixPath}]: ${raw}`);
-
-  const sock = net.createConnection(unixPath);
-  sock.setKeepAlive(true, 5000);
-  sock.write(raw + "\n");
+      const sock = net.createConnection(unixPath);
+      sock.setKeepAlive(true, 5000);
+      sock.write(raw + "\n");
 
       // Emit user message to Kafka
       try {

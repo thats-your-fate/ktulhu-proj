@@ -3,27 +3,34 @@ mod config;
 mod messages;
 mod worker;
 mod util;
+mod kafka;
+mod routes;
 
-use axum::{Router, routing::get};
-use std::{sync::Arc, path::Path};
-use tokio::{net::TcpListener, sync::{Mutex, broadcast}};
+use axum::{Router};
+use std::{sync::Arc, path::Path, net::SocketAddr, collections::HashMap};
+use tokio::{
+    net::TcpListener,
+    sync::{Mutex, broadcast, RwLock},
+};
+use tracing::{info, warn};
+
 use crate::{
     app_state::{AppState, WorkerState},
     config::AppConfig,
     worker::manager::{spawn_workers_from_config, spawn_node_process_from_config},
+    kafka::chat_summary::{spawn_chat_summary_consumer, ChatSummary},
+    routes::chat_summary::{router as chat_summary_router, ChatSummaryState},
+    util::process_registry::{ProcessRegistry, watch_shutdown},
 };
-use tracing::{info, warn};
-use crate::util::process_registry::{ProcessRegistry, watch_shutdown};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    // 🔧 Load configuration
+    // 🔧 Load config
     let cfg = AppConfig::load()?;
     info!("Loaded {} worker configs", cfg.workers.len());
 
-    // 🧱 Shared process registry
     let registry = Arc::new(ProcessRegistry::default());
 
     // 🧠 Spawn Python inference workers
@@ -33,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
         .map(|w| WorkerState { worker: w, busy: false })
         .collect::<Vec<_>>();
 
-    // 🪄 Check Node.js binary presence
+    // 🪄 Check Node.js binary
     let node_bin = Path::new("./node-v22-linux-x64/bin/node");
     if !node_bin.exists() {
         warn!("⚠️ Node.js v22 binary not found. Run `./init_node.sh` to install it.");
@@ -41,28 +48,47 @@ async fn main() -> anyhow::Result<()> {
         info!("✅ Found local Node.js binary at {}", node_bin.display());
     }
 
-    // 🧩 Optional Node.js orchestrator (scraper/controller)
+    // 🚀 Spawn optional Node.js process
     spawn_node_process_from_config(&cfg, registry.clone()).await;
 
-    // 🔌 Shared app state (for WebSocket or HTTP routes)
+    // 📡 Initialize broadcast channels and shared state
     let (status_tx, _) = broadcast::channel(32);
     let app_state = AppState {
         status_tx,
         workers: Arc::new(Mutex::new(worker_states)),
     };
 
-    let addr: std::net::SocketAddr = ([0, 0, 0, 0], 8080).into();
+    // 🧩 Kafka consumer for chat summaries
+    let (chat_summary_tx, chat_summary_map) = {
+        let (tx, _rx) = broadcast::channel::<ChatSummary>(32);
+        let map = Arc::new(RwLock::new(HashMap::new()));
+        spawn_chat_summary_consumer(
+            "localhost:9092".to_string(),
+            "user_messages".to_string(),
+            tx.clone(),
+            map.clone(),
+        ).await;
+        (tx, map)
+    };
+
+    // 🧠 Chat summary routes
+    let chat_state = ChatSummaryState {
+        tx: chat_summary_tx.clone(),
+        data: chat_summary_map.clone(),
+    };
+
+    let app = Router::new()
+        .merge(chat_summary_router())
+        .with_state(chat_state);
+
+    // 🌍 Bind and serve
+    let addr: SocketAddr = ([0, 0, 0, 0], 8080).into();
     info!("🚀 Server running on {}", addr);
 
-
+    let listener = TcpListener::bind(addr).await?;
     tokio::select! {
+        _ = axum::serve(listener, app.into_make_service()) => {},
         _ = watch_shutdown(registry.clone()) => {},
-        // 👇 Dummy main loop, replace with your server in future
-        _ = async {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-            }
-        } => {},
     }
 
     Ok(())

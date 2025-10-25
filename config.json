@@ -6,12 +6,6 @@
       "socket": "/tmp/infer_b.sock",
       "gpu": "0",
       "model": "mistralai/Mistral-7B-Instruct-v0.2"
-    },
-            {
-      "name": "reasoning1",
-      "socket": "/tmp/infer_c.sock",
-      "gpu": "0",
-      "model": "NousResearch/Nous-Hermes-13b"
     }
   ],
   "node_process": {
@@ -23,8 +17,7 @@
       ["MAX_CONCURRENCY", "3"]
     ],
     "cwd": "/srv/mistral/ktulhuUpgarade/scripts",
-    "nodecwd": "/srv/mistral/ktulhuUpgarade/node/dist",
-          "model": "mistralai/Mistral-13B-Instruct-v0.1"
+    "nodecwd": "/srv/mistral/ktulhuUpgarade/node/dist"
 
   }
 }

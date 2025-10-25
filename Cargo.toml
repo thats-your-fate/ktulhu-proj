@@ -20,3 +20,5 @@ tui = "0.19"              # lightweight terminal UI library
 chrono = "0.4"            # for timestamps
 tokio-tungstenite = "0.28.0"
 futures-util = "0.3.31"
+nix = "0.30.1"
+rdkafka = { version = "0.36", features = ["tokio"] }
