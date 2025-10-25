@@ -45,18 +45,31 @@ def normalize_prompt(raw: str) -> str:
 
 def build_reasoning_prompt(user_text: str) -> str:
     """
-    Add an invisible reasoning layer.
-    This gives the model clarity before generation, without showing it to the user.
+    Enhanced reasoning prompt with markdown and formatting awareness.
+    Makes the model output more structured, readable, and expressive.
     """
     normalized = normalize_prompt(user_text)
     meta_prefix = (
-        "You are an expert reasoning assistant. "
-        "First interpret the user's intent precisely, clarify ambiguous parts internally, "
-        "then produce a single clear, helpful answer.\n\n"
-        f"User request: {normalized}\n\nResponse:"
+        "You are an **expert reasoning assistant** trained to produce well-formatted, "
+        "markdown-based responses that are both informative and visually clear.\n\n"
+        "🧩 **Your goals:**\n"
+        "1. 🧠 Analyze the user's intent precisely.\n"
+        "2. 🔍 Clarify any ambiguous parts internally before answering.\n"
+        "3. ✍️ Produce a **single**, structured, and helpful answer formatted in **Markdown**.\n"
+        "4. Use clear section headers (###), bullet points, bold and italic emphasis, and code blocks where suitable.\n\n"
+        f"---\n"
+        f"### 💬 User Request\n"
+        f"{normalized}\n\n"
+        f"---\n"
+        f"### 🪄 Response\n"
     )
     return meta_prefix
 
+def make_summary_with_model(user_text):
+    summary_prompt = f"Summarize in 3-4 words: {user_text.strip()}"
+    inputs = tokenizer(summary_prompt, return_tensors="pt").to(device)
+    output = model.generate(**inputs, max_new_tokens=8, temperature=0.0)
+    return tokenizer.decode(output[0], skip_special_tokens=True).strip()
 
 # ────────────────────────────────────────────────
 # 🔁 Stream inference logic (unchanged structure)
@@ -65,7 +78,6 @@ def build_reasoning_prompt(user_text: str) -> str:
 def stream_infer(prompt: str, conn, uid: str):
     """Generate tokens incrementally and send JSON lines for each."""
     final_prompt = build_reasoning_prompt(prompt)
-
     inputs = tokenizer(final_prompt, return_tensors="pt").to(device)
     streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
 
@@ -90,6 +102,11 @@ def stream_infer(prompt: str, conn, uid: str):
     except Exception as e:
         conn.sendall(json.dumps({"id": uid, "error": str(e)}).encode() + b"\n")
 
+    # 🧠 Emit short summary before "done"
+    summary = make_summary_with_model(prompt)
+    conn.sendall(json.dumps({"id": uid, "summary": summary}).encode() + b"\n")
+
+    # ✅ Final "done" event
     conn.sendall(json.dumps({"id": uid, "done": True}).encode() + b"\n")
     thread.join()
 

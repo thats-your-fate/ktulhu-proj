@@ -71,19 +71,26 @@ async fn main() -> anyhow::Result<()> {
         (tx, map)
     };
 
-    // 🧠 Chat summary routes
-    let chat_state = ChatSummaryState {
-        tx: chat_summary_tx.clone(),
-        data: chat_summary_map.clone(),
-    };
+use tower_http::cors::{CorsLayer, Any};
 
-    let app = Router::new()
-        .merge(chat_summary_router())
-        .with_state(chat_state);
+// 🧠 Chat summary routes
+let chat_state = ChatSummaryState {
+    tx: chat_summary_tx.clone(),
+    data: chat_summary_map.clone(),
+};
 
-    // 🌍 Bind and serve
-    let addr: SocketAddr = ([0, 0, 0, 0], 8080).into();
-    info!("🚀 Server running on {}", addr);
+let cors = CorsLayer::new()
+    .allow_origin(Any)
+    .allow_methods(Any)
+    .allow_headers(Any);
+
+let app = Router::new()
+    .merge(chat_summary_router())
+    .with_state(chat_state)
+    .layer(cors);
+let addr: std::net::SocketAddr = ([0, 0, 0, 0], 8080).into();
+info!("🚀 Server running on {}", addr);
+
 
     let listener = TcpListener::bind(addr).await?;
     tokio::select! {

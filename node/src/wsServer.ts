@@ -133,26 +133,56 @@ export async function startSocketServer(unixPath: string, port: number) {
       sock.write(raw + "\n");
 
       // Emit user message to Kafka
-      try {
-        if (producer) {
-          await producer.send({
-            topic: "user_messages",
-            messages: [
-              {
-                key: clientId,
-                value: JSON.stringify({
-                  client_id: clientId,
-                  message: data,
-                  ts: Date.now(),
-                }),
-              },
-            ],
-          });
-          log.ok("🪣 Kafka → user_messages emitted");
-        }
-      } catch (err: any) {
-        log.err(`Kafka emit failed (user_messages): ${err.message}`);
-      }
+// Emit user message to Kafka
+// 🪣 Emit user message to Kafka safely
+try {
+  if (!producer) {
+    log.err("⚠️ Kafka producer not initialized");
+  } else {
+    // 🧠 Extract useful fields
+    const userText =
+      data.text ||
+      data.message?.text ||
+      data.prompt ||
+      "";
+
+    // 🧩 Simple local summary fallback (3–4 words)
+    const makeSummary = (text: string) => {
+      const clean = text.replace(/[^a-zA-Z0-9\s]/g, "").trim();
+      const words = clean.split(/\s+/).slice(0, 4);
+      return words.length ? words.join(" ") : "General request";
+    };
+
+    const summaryValue =
+      data.summary ||
+      data.message?.summary ||
+      makeSummary(userText);
+
+    const kafkaMessage = {
+      client_id: clientId,
+      message: data,
+      summary: summaryValue,
+      ts: Date.now(),
+      device_hash: (ws as any).deviceHash || null,
+    };
+
+    await producer.send({
+      topic: "user_messages",
+      messages: [
+        {
+          key: clientId,
+          value: JSON.stringify(kafkaMessage),
+        },
+      ],
+    });
+
+    log.ok(`🪣 Kafka → user_messages emitted (summary="${summaryValue}")`);
+  }
+} catch (err: any) {
+  log.err(`Kafka emit failed (user_messages): ${err.message}`);
+}
+
+
 
       let buffer = "";
       let fullResponse = "";
