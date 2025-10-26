@@ -73,6 +73,14 @@ def stream_infer(prompt: str, conn, uid: str):
     inputs = tokenizer(final_prompt, return_tensors="pt").to(device)
     streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
 
+    # 🧠 Emit short summary BEFORE starting generation
+    try:
+        summary = make_summary_with_model(prompt)
+        conn.sendall(json.dumps({"id": uid, "summary": summary}).encode() + b"\n")
+        print(f"🧩 Emitted early summary: {summary}", flush=True)
+    except Exception as e:
+        print(f"⚠️ Failed to make summary: {e}", flush=True)
+
     thread = Thread(
         target=model.generate,
         kwargs=dict(
@@ -89,14 +97,9 @@ def stream_infer(prompt: str, conn, uid: str):
     try:
         for new_text in streamer:
             msg = json.dumps({"id": uid, "token": new_text})
-            print(f"🧩 Emitting: {repr(new_text)}", flush=True)
             conn.sendall(msg.encode() + b"\n")
     except Exception as e:
         conn.sendall(json.dumps({"id": uid, "error": str(e)}).encode() + b"\n")
-
-    # 🧠 Emit short summary before "done"
-    summary = make_summary_with_model(prompt)
-    conn.sendall(json.dumps({"id": uid, "summary": summary}).encode() + b"\n")
 
     # ✅ Final "done" event
     conn.sendall(json.dumps({"id": uid, "done": True}).encode() + b"\n")

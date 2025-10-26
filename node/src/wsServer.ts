@@ -136,82 +136,123 @@ export async function startSocketServer(unixPath: string, port: number) {
 // Emit user message to Kafka
 // 🪣 Emit user message to Kafka safely
 try {
+  // ✅ Ensure Kafka producer exists (TypeScript-safe)
   if (!producer) {
-    log.err("⚠️ Kafka producer not initialized");
-  } else {
-    // 🧠 Extract useful fields
-    const userText =
-      data.text ||
-      data.message?.text ||
-      data.prompt ||
-      "";
-
-    // 🧩 Simple local summary fallback (3–4 words)
-    const makeSummary = (text: string) => {
-      const clean = text.replace(/[^a-zA-Z0-9\s]/g, "").trim();
-      const words = clean.split(/\s+/).slice(0, 4);
-      return words.length ? words.join(" ") : "General request";
-    };
-
-    const summaryValue =
-      data.summary ||
-      data.message?.summary ||
-      makeSummary(userText);
-
-    const kafkaMessage = {
-      client_id: clientId,
-      message: data,
-      summary: summaryValue,
-      ts: Date.now(),
-      device_hash: (ws as any).deviceHash || null,
-    };
-
-    await producer.send({
-      topic: "user_messages",
-      messages: [
-        {
-          key: clientId,
-          value: JSON.stringify(kafkaMessage),
-        },
-      ],
-    });
-
-    log.ok(`🪣 Kafka → user_messages emitted (summary="${summaryValue}")`);
+    await ensureKafka();
+    if (!producer) throw new Error("Kafka producer still uninitialized after ensureKafka()");
   }
+
+  // 🧠 Extract user text (whatever form it comes in)
+  const userText =
+    data.text ||
+    data.message?.text ||
+    data.prompt ||
+    "";
+
+  // 🪄 Step 1: always start with a "New chat" summary
+  const initialSummary = "New chat";
+
+  const kafkaMessage = {
+    client_id: clientId,
+    message: data,
+    summary: initialSummary,
+    ts: Date.now(),
+    device_hash: (ws as any).deviceHash || null,
+  };
+
+  // 🔹 Send initial placeholder message to Kafka
+  await producer.send({
+    topic: "user_messages",
+    messages: [
+      {
+        key: clientId,
+        value: JSON.stringify(kafkaMessage),
+      },
+    ],
+  });
+
+  log.ok(`🪣 Kafka → user_messages emitted (summary="${initialSummary}")`);
+
+  // 🧩 Step 2: wait for model-generated summary from Python
+  // Python emits: { id: clientId, summary: "Model summary" }
+  (ws as any).onModelSummary = async (modelSummary: string) => {
+    try {
+      if (!producer) {
+        log.err("⚠️ Kafka producer missing during model summary update");
+        return;
+      }
+
+      const updatedMessage = {
+        ...kafkaMessage,
+        summary: modelSummary,
+        ts: Date.now(),
+      };
+
+      await producer.send({
+        topic: "user_messages",
+        messages: [
+          {
+            key: clientId,
+            value: JSON.stringify(updatedMessage),
+          },
+        ],
+      });
+
+      log.ok(`🪄 Kafka → user_messages updated with model summary ("${modelSummary}")`);
+    } catch (err: any) {
+      log.err(`Kafka update failed (summary): ${err.message}`);
+    }
+  };
 } catch (err: any) {
   log.err(`Kafka emit failed (user_messages): ${err.message}`);
 }
 
 
 
+
+
       let buffer = "";
       let fullResponse = "";
 
-      sock.on("data", (chunk) => {
-        buffer += chunk.toString();
-        const parts = buffer.split("\n");
-        buffer = parts.pop()!;
+sock.on("data", (chunk) => {
+  buffer += chunk.toString();
+  const parts = buffer.split("\n");
+  buffer = parts.pop()!;
 
-        for (const line of parts) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
+  for (const line of parts) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
 
-          let msgOut: string;
-          if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-            msgOut = trimmed;
-          } else {
-            msgOut = JSON.stringify({ token: trimmed });
-          }
+    try {
+      const parsed = JSON.parse(trimmed);
 
-          try {
-            ws.send(msgOut);
-            fullResponse += trimmed + " ";
-            if (trimmed.includes('"done"') || trimmed === "[DONE]") sock.end();
-          } catch (err: any) {
-            log.err(`Error sending WS chunk: ${err.message}`);
-          }
+      // 🧩 Handle model-generated summary
+      if (parsed.summary && typeof parsed.summary === "string") {
+        log.ok(`🧠 Received model summary: "${parsed.summary}"`);
+        if ((ws as any).onModelSummary) {
+          (ws as any).onModelSummary(parsed.summary);
         }
-      });
+        continue; // skip sending to frontend
+      }
+
+      // 🧩 Normal stream token
+      ws.send(JSON.stringify(parsed));
+      fullResponse += JSON.stringify(parsed) + " ";
+
+      if (parsed.done) {
+        log.info(`✅ Worker finished inference for ${clientId}`);
+        sock.end();
+      }
+
+    } catch (err) {
+      // fallback for raw text tokens
+      const safe = JSON.stringify({ token: trimmed });
+      ws.send(safe);
+      fullResponse += trimmed + " ";
+    }
+  }
+});
+
 
       sock.on("end", async () => {
         if (fullResponse.trim().length > 0 && producer) {

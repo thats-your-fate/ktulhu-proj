@@ -1,5 +1,8 @@
 use axum::{
-    extract::{State, ws::{WebSocketUpgrade, WebSocket}},
+    extract::{
+        State,
+        ws::{WebSocketUpgrade, WebSocket, Message},
+    },
     response::IntoResponse,
     routing::get,
     Json, Router,
@@ -7,7 +10,7 @@ use axum::{
 use serde_json::json;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use tracing::info;
 
 use crate::kafka::chat_summary::{ChatSummary, ChatMap};
@@ -24,26 +27,45 @@ pub fn router() -> Router<ChatSummaryState> {
         .route("/chat-summary/ws", get(ws_handler))
 }
 
-/// Return all chat summaries
+/// 🧩 Return all chat summaries (HTTP GET)
 async fn list_last(State(state): State<ChatSummaryState>) -> impl IntoResponse {
     let data = state.data.read().await;
-    let chats: Vec<_> = data.values().cloned().collect();
+
+    // Map preview → summary for frontend
+    let chats: Vec<_> = data
+        .values()
+        .map(|c| {
+            json!({
+                "chat_id": c.chat_id,
+                "summary": c.summary,  // ✅ map preview → summary
+                "ts": c.ts
+            })
+        })
+        .collect();
+
     Json(json!({ "chats": chats }))
 }
 
-/// WebSocket stream of new chat summaries
+/// 🌐 WebSocket live feed of new chat summaries
 async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<ChatSummaryState>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |mut socket: WebSocket| async move {
         let mut rx = state.tx.subscribe();
-
         info!("🌐 New /chat-summary/ws connection");
 
         while let Ok(summary) = rx.recv().await {
-            let msg = serde_json::to_string(&summary).unwrap();
-            if socket.send(axum::extract::ws::Message::Text(msg)).await.is_err() {
+            // Normalize structure before sending to frontend
+            let msg = json!({
+                "chat_id": summary.chat_id,
+                "summary": summary.summary,  // ✅ rename key
+                "ts": summary.ts
+            });
+
+            let text = serde_json::to_string(&msg).unwrap();
+
+            if socket.send(Message::Text(text)).await.is_err() {
                 break;
             }
         }
