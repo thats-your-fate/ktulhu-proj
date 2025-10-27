@@ -8,64 +8,73 @@ use axum::{
     Json, Router,
 };
 use serde_json::json;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{broadcast, RwLock};
-use futures_util::SinkExt;
 use tracing::info;
+use futures_util::SinkExt;
 
-use crate::kafka::chat_summary::{ChatSummary, ChatMap};
+use crate::kafka::messages::MessageEvent;
+use crate::routes::state::RouteState;
 
-#[derive(Clone)]
-pub struct ChatSummaryState {
-    pub tx: broadcast::Sender<ChatSummary>,
-    pub data: ChatMap,
-}
 
-pub fn router() -> Router<ChatSummaryState> {
+
+/// Build the router for chat summary endpoints
+pub fn router() -> Router<RouteState> {
     Router::new()
         .route("/chat-summary/last", get(list_last))
         .route("/chat-summary/ws", get(ws_handler))
 }
 
-/// 🧩 Return all chat summaries (HTTP GET)
-async fn list_last(State(state): State<ChatSummaryState>) -> impl IntoResponse {
-    let data = state.data.read().await;
+async fn list_last(State(state): State<RouteState>) -> impl IntoResponse {
+    let data = state.messages.read().await;
 
-    // Map preview → summary for frontend
+    // Collect last "summary" message for every chat_id
     let chats: Vec<_> = data
-        .values()
-        .map(|c| {
-            json!({
-                "chat_id": c.chat_id,
-                "summary": c.summary,  // ✅ map preview → summary
-                "ts": c.ts
-            })
+        .iter()
+        .filter_map(|(chat_id, msgs)| {
+            msgs.iter()
+                .rev()
+                .find(|m| m.role == "summary" && m.summary.is_some())
+                .map(|m| {
+                    json!({
+                        "chat_id": chat_id,
+                        "summary": m.summary,
+                        "ts": m.ts
+                    })
+                })
         })
         .collect();
 
     Json(json!({ "chats": chats }))
 }
 
-/// 🌐 WebSocket live feed of new chat summaries
+/// 🌐 WebSocket: stream new summary messages in real time
 async fn ws_handler(
     ws: WebSocketUpgrade,
-    State(state): State<ChatSummaryState>,
+    State(state): State<RouteState>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |mut socket: WebSocket| async move {
         let mut rx = state.tx.subscribe();
-        info!("🌐 New /chat-summary/ws connection");
+        info!("🌐 Connected to /chat-summary/ws");
 
-        while let Ok(summary) = rx.recv().await {
-            // Normalize structure before sending to frontend
+        while let Ok(event) = rx.recv().await {
+            // Only forward summary role messages
+            if event.role != "summary" {
+                continue;
+            }
+
             let msg = json!({
-                "chat_id": summary.chat_id,
-                "summary": summary.summary,  // ✅ rename key
-                "ts": summary.ts
+                "chat_id": event.chat_id,
+                "summary": event.summary,
+                "ts": event.ts
             });
 
-            let text = serde_json::to_string(&msg).unwrap();
-
-            if socket.send(Message::Text(text)).await.is_err() {
+            // Send JSON message to client
+            if socket
+                .send(Message::Text(serde_json::to_string(&msg).unwrap()))
+                .await
+                .is_err()
+            {
                 break;
             }
         }

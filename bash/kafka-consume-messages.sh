@@ -7,7 +7,7 @@ BOOTSTRAP="localhost:9092"
 
 "$KAFKA_BIN/kafka-console-consumer.sh" \
   --bootstrap-server "$BOOTSTRAP" \
-  --topic user_messages \
+  --topic messages \
   --from-beginning \
   --timeout-ms 10000 \
   --property print.key=true \

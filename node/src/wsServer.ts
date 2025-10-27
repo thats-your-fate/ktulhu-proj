@@ -8,6 +8,7 @@ import { Kafka, Producer } from "kafkajs";
 import { Worker } from "worker_threads";
 import { log } from "./utils/logger";
 
+// 🧠 Kafka setup
 const kafka = new Kafka({
   clientId: "ws-proxy",
   brokers: ["localhost:9092"],
@@ -27,21 +28,19 @@ async function ensureKafka(): Promise<void> {
 }
 
 async function waitForSocket(unixPath: string, maxAttempts = 30): Promise<void> {
-  let attempt = 0;
   const absPath = path.resolve(unixPath);
-  while (attempt < maxAttempts) {
+  for (let i = 0; i < maxAttempts; i++) {
     if (fs.existsSync(absPath)) {
       log.ok(` Found worker socket: ${absPath}`);
       return;
     }
-    attempt++;
-    log.warn(`⏳ Waiting for ${absPath} (attempt ${attempt}/${maxAttempts})...`);
-    await new Promise((res) => setTimeout(res, 10_000));
+    log.warn(`⏳ Waiting for ${absPath} (${i + 1}/${maxAttempts})...`);
+    await new Promise((r) => setTimeout(r, 10_000));
   }
   throw new Error(`Timeout waiting for worker socket: ${absPath}`);
 }
 
-/** 🔄 Start Kafka bridge in a background worker thread */
+// 🧩 Kafka bridge worker (optional)
 function startKafkaBridge() {
   const bridgePath = path.resolve(__dirname, "kafkaBridge.js");
   const worker = new Worker(bridgePath);
@@ -62,24 +61,18 @@ function startKafkaBridge() {
           ts,
           source: topic,
         },
-      };  
+      };
 
       const json = JSON.stringify(summary);
-      const clients = deviceClients.get(device);
-      if (!clients) return;
-
-      for (const ws of clients) {
+      for (const ws of deviceClients.get(device) ?? []) {
         if (ws.readyState === WebSocket.OPEN) ws.send(json);
       }
     } catch (err) {
-      log.err(`Kafka bridge relay error: `);
+      log.err(`Kafka bridge relay error: ${(err as Error).message}`);
     }
   });
 
-  worker.on("error", (err) => {
-    log.err("Kafka bridge worker error: " + err.message);
-  });
-
+  worker.on("error", (err) => log.err("Kafka bridge worker error: " + err.message));
   log.ok("🪣 Kafka bridge worker started");
 }
 
@@ -93,20 +86,17 @@ export async function startSocketServer(unixPath: string, port: number) {
   });
 
   const wss = new WebSocketServer({ server });
-
-  // Start Kafka bridge in its own worker thread
   startKafkaBridge();
 
   wss.on("connection", (ws: WebSocket) => {
     const clientId = randomUUID();
     (ws as any).clientId = clientId;
+    log.ok(`🔌 WebSocket connected → clientId=${clientId}`);
 
-    log.ok(` WebSocket client connected (port ${port}) → clientId=${clientId}`);
-
-    ws.on("message", async (msg: WebSocket.RawData) => {
+    ws.on("message", async (msg) => {
       const raw = msg.toString();
-
       let data: any;
+
       try {
         data = JSON.parse(raw);
       } catch {
@@ -114,194 +104,187 @@ export async function startSocketServer(unixPath: string, port: number) {
         return;
       }
 
-      // ✅ Device registration
+      // 🪪 Device registration
       if (data.type === "register" && data.device_hash) {
         const device = data.device_hash;
         const set = deviceClients.get(device) || new Set<WebSocket>();
         set.add(ws);
         deviceClients.set(device, set);
         (ws as any).deviceHash = device;
-        log.ok(`📱 Registered device hash: ${device}`);
+        log.ok(`📱 Registered device ${device}`);
         return;
       }
 
-      // 🔄 Normal inference message handling
-      log.info(` From WS client (${clientId}) → worker [${unixPath}]: ${raw}`);
+      // 💬 Handle normal chat message
+      const device = (ws as any).deviceHash || null;
+      const chatId = data.chat_id || data.session_id || clientId;
+      const text = data.text || data.prompt || data.message?.text || "";
 
-      const sock = net.createConnection(unixPath);
-      sock.setKeepAlive(true, 5000);
-      sock.write(raw + "\n");
+      // ✅ Step 1: persist USER message to Kafka immediately
+      if (text.trim()) {
+        try {
+          if (!producer) await ensureKafka();
+          if (!producer) throw new Error("Kafka producer unavailable");
 
-      // Emit user message to Kafka
-// Emit user message to Kafka
-// 🪣 Emit user message to Kafka safely
-try {
-  // ✅ Ensure Kafka producer exists (TypeScript-safe)
-  if (!producer) {
-    await ensureKafka();
-    if (!producer) throw new Error("Kafka producer still uninitialized after ensureKafka()");
-  }
+          const userMsg = {
+            role: "user",
+            chat_id: chatId,
+            session_id: data.session_id,
+            device_hash: device,
+            text,
+            ts: Date.now(),
+          };
 
-  // 🧠 Extract user text (whatever form it comes in)
-  const userText =
-    data.text ||
-    data.message?.text ||
-    data.prompt ||
-    "";
+          await producer.send({
+            topic: "messages",
+            messages: [{ key: chatId, value: JSON.stringify(userMsg) }],
+          });
 
-  // 🪄 Step 1: always start with a "New chat" summary
-  const initialSummary = "New chat";
-
-  const kafkaMessage = {
-    client_id: clientId,
-    message: data,
-    summary: initialSummary,
-    ts: Date.now(),
-    device_hash: (ws as any).deviceHash || null,
-  };
-
-  // 🔹 Send initial placeholder message to Kafka
-  await producer.send({
-    topic: "user_messages",
-    messages: [
-      {
-        key: clientId,
-        value: JSON.stringify(kafkaMessage),
-      },
-    ],
-  });
-
-  log.ok(`🪣 Kafka → user_messages emitted (summary="${initialSummary}")`);
-
-  // 🧩 Step 2: wait for model-generated summary from Python
-  // Python emits: { id: clientId, summary: "Model summary" }
-  (ws as any).onModelSummary = async (modelSummary: string) => {
-    try {
-      if (!producer) {
-        log.err("⚠️ Kafka producer missing during model summary update");
-        return;
+          log.ok(`🪣 Kafka → messages (user: ${text.slice(0, 60)}...)`);
+        } catch (err: any) {
+          log.err(`Kafka emit failed (user): ${err.message}`);
+        }
       }
 
-      const updatedMessage = {
-        ...kafkaMessage,
-        summary: modelSummary,
-        ts: Date.now(),
-      };
-
-      await producer.send({
-        topic: "user_messages",
-        messages: [
-          {
-            key: clientId,
-            value: JSON.stringify(updatedMessage),
-          },
-        ],
-      });
-
-      log.ok(`🪄 Kafka → user_messages updated with model summary ("${modelSummary}")`);
-    } catch (err: any) {
-      log.err(`Kafka update failed (summary): ${err.message}`);
-    }
-  };
-} catch (err: any) {
-  log.err(`Kafka emit failed (user_messages): ${err.message}`);
-}
-
-
-
-
-
-      let buffer = "";
-      let fullResponse = "";
-
-sock.on("data", (chunk) => {
-  buffer += chunk.toString();
-  const parts = buffer.split("\n");
-  buffer = parts.pop()!;
-
-  for (const line of parts) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-
-    try {
-      const parsed = JSON.parse(trimmed);
-
-      // 🧩 Handle model-generated summary
-      if (parsed.summary && typeof parsed.summary === "string") {
-        log.ok(`🧠 Received model summary: "${parsed.summary}"`);
-        if ((ws as any).onModelSummary) {
-          (ws as any).onModelSummary(parsed.summary);
-        }
-        continue; // skip sending to frontend
+      // ✅ Step 2: forward request to worker socket
+      try {
+        const sock = net.createConnection(unixPath);
+        sock.setKeepAlive(true, 5000);
+        sock.write(raw + "\n");
+        handleWorkerStream(sock, ws, data, chatId);
+      } catch (err: any) {
+        log.err(` Worker socket error: ${err.message}`);
+        ws.send(JSON.stringify({ error: err.message }));
       }
+    });
 
-      // 🧩 Normal stream token
-      ws.send(JSON.stringify(parsed));
-      fullResponse += JSON.stringify(parsed) + " ";
-
-      if (parsed.done) {
-        log.info(`✅ Worker finished inference for ${clientId}`);
-        sock.end();
+    ws.on("close", () => {
+      const device = (ws as any).deviceHash;
+      if (device && deviceClients.has(device)) {
+        const set = deviceClients.get(device)!;
+        set.delete(ws);
+        if (set.size === 0) deviceClients.delete(device);
+        log.warn(`🧹 Disconnected and removed device ${device}`);
       }
-
-    } catch (err) {
-      // fallback for raw text tokens
-      const safe = JSON.stringify({ token: trimmed });
-      ws.send(safe);
-      fullResponse += trimmed + " ";
-    }
-  }
-});
-
-
-      sock.on("end", async () => {
-        if (fullResponse.trim().length > 0 && producer) {
-          try {
-            await producer.send({
-              topic: "assistant_responses",
-              messages: [
-                {
-                  key: clientId,
-                  value: JSON.stringify({
-                    client_id: clientId,
-                    response: fullResponse.trim(),
-                    ts: Date.now(),
-                    device_hash: (ws as any).deviceHash || null,
-                  }),
-                },
-              ],
-            });
-            log.ok("🪣 Kafka → assistant_responses emitted");
-          } catch (err: any) {
-            log.err(`Kafka emit failed (assistant_responses): ${err.message}`);
-          }
-        }
-      });
-
-      sock.on("error", (err) => {
-        log.err(` Worker socket error (${unixPath}): ${err.message}`);
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ error: err.message }));
-          ws.close();
-        }
-      });
-
-      ws.on("close", () => {
-        const device = (ws as any).deviceHash;
-        if (device && deviceClients.has(device)) {
-          const set = deviceClients.get(device)!;
-          set.delete(ws);
-          if (set.size === 0) deviceClients.delete(device);
-          log.warn(`WS disconnected → removed from ${device}`);
-        }
-        sock.destroy();
-      });
     });
   });
 
   server.listen(port, "0.0.0.0", () => {
-    log.ok(` Proxy WebSocket listening on port ${port} → ${unixPath}`);
+    log.ok(`🚀 Proxy WebSocket listening on port ${port} → ${unixPath}`);
   });
 
   return { wss, server };
+}
+
+/* --------------------------------------------------------- */
+/* 🔧 Worker stream + Kafka emitters */
+/* --------------------------------------------------------- */
+
+function handleWorkerStream(sock: net.Socket, ws: WebSocket, data: any, chatId: string) {
+  let buffer = "";
+  let fullResponse = "";
+
+  sock.on("data", (chunk) => {
+    buffer += chunk.toString();
+    const parts = buffer.split("\n");
+    buffer = parts.pop()!;
+
+    for (const line of parts) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      try {
+        const parsed = JSON.parse(trimmed);
+
+        // 🧠 Model summary
+        if (parsed.summary && typeof parsed.summary === "string") {
+          emitSummaryToKafka(parsed.summary, ws, data, chatId);
+          continue;
+        }
+
+        // 🔤 Token streaming
+        if (parsed.token) fullResponse += parsed.token;
+        ws.send(JSON.stringify(parsed));
+
+        if (parsed.done) sock.end();
+      } catch {
+        fullResponse += trimmed;
+        ws.send(JSON.stringify({ token: trimmed }));
+      }
+    }
+  });
+
+  sock.on("end", async () => {
+    const cleaned = fullResponse.replace(/\s+/g, " ").trim();
+    if (cleaned) await emitAssistantToKafka(cleaned, ws, data, chatId);
+  });
+
+  sock.on("error", (err) => {
+    log.err(` Worker socket error: ${err.message}`);
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ error: err.message }));
+      ws.close();
+    }
+  });
+}
+
+async function emitAssistantToKafka(text: string, ws: WebSocket, data: any, chatId: string) {
+  try {
+    if (!producer) await ensureKafka();
+    if (!producer) throw new Error("Kafka producer unavailable");
+
+    const msg = {
+      role: "assistant",
+      chat_id: chatId,
+      session_id: data.session_id,
+      device_hash: (ws as any).deviceHash || null,
+      text,
+      ts: Date.now(),
+    };
+
+    await producer.send({
+      topic: "messages",
+      messages: [{ key: chatId, value: JSON.stringify(msg) }],
+    });
+
+    log.ok(`🪣 Kafka → messages (assistant: ${text.slice(0, 60)}...)`);
+  } catch (err: any) {
+    log.err(`Kafka emit failed (assistant): ${err.message}`);
+  }
+}
+
+async function emitSummaryToKafka(summary: string, ws: WebSocket, data: any, chatId: string) {
+  try {
+    if (!producer) await ensureKafka();
+    if (!producer) throw new Error("Kafka producer unavailable");
+
+    const event = {
+      role: "summary",
+      chat_id: chatId,
+      session_id: data.session_id,
+      device_hash: (ws as any).deviceHash || null,
+      summary,
+      ts: Date.now(),
+    };
+
+    await producer.send({
+      topic: "messages",
+      messages: [{ key: chatId, value: JSON.stringify(event) }],
+    });
+
+    log.ok(`🪣 Kafka → messages (summary: ${summary.slice(0, 60)}...)`);
+
+    // 📡 also broadcast live to registered clients
+    const device = (ws as any).deviceHash;
+    const payload = JSON.stringify({
+      type: "chat_summary",
+      data: { chat_id: chatId, summary, ts: Date.now(), source: "inference" },
+    });
+
+    for (const client of deviceClients.get(device) ?? []) {
+      if (client.readyState === WebSocket.OPEN) client.send(payload);
+    }
+  } catch (err: any) {
+    log.err(`Kafka emit failed (summary): ${err.message}`);
+  }
 }

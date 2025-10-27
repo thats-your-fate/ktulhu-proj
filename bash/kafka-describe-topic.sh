@@ -4,7 +4,7 @@
 set -e
 KAFKA_BIN="/srv/mistral/kafka/bin"
 BOOTSTRAP="localhost:9092"
-TOPIC="${1:-user_messages}"
+TOPIC="${1:-messages}"
 
 "$KAFKA_BIN/kafka-configs.sh" \
   --bootstrap-server "$BOOTSTRAP" \

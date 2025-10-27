@@ -6,22 +6,31 @@ mod util;
 mod kafka;
 mod routes;
 
-use axum::{Router};
-use std::{sync::Arc, path::Path, net::SocketAddr, collections::HashMap};
+use axum::Router;
+use std::{collections::HashMap, net::SocketAddr, path::Path, sync::Arc};
 use tokio::{
     net::TcpListener,
-    sync::{Mutex, broadcast, RwLock},
+    sync::{broadcast, Mutex, RwLock},
 };
 use tracing::{info, warn};
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::{
     app_state::{AppState, WorkerState},
     config::AppConfig,
-    worker::manager::{spawn_workers_from_config, spawn_node_process_from_config},
-    kafka::chat_summary::{spawn_chat_summary_consumer, ChatSummary},
-    routes::chat_summary::{router as chat_summary_router, ChatSummaryState},
-    util::process_registry::{ProcessRegistry, watch_shutdown},
+    kafka::messages::{spawn_chat_summary_consumer, MessageEvent},
+    util::process_registry::{watch_shutdown, ProcessRegistry},
+    worker::manager::{spawn_node_process_from_config, spawn_workers_from_config},
+    
 };
+
+
+use crate::routes::{
+    chat_summary::router as chat_summary_router,
+    chat_thread::router as chat_thread_router,
+    state::RouteState,
+};
+
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -48,49 +57,55 @@ async fn main() -> anyhow::Result<()> {
         info!("✅ Found local Node.js binary at {}", node_bin.display());
     }
 
-    // 🚀 Spawn optional Node.js process
+    // 🚀 Optional Node.js proxy
     spawn_node_process_from_config(&cfg, registry.clone()).await;
 
-    // 📡 Initialize broadcast channels and shared state
+    // 📡 App state
     let (status_tx, _) = broadcast::channel(32);
-    let app_state = AppState {
+    let _app_state = AppState {
         status_tx,
         workers: Arc::new(Mutex::new(worker_states)),
     };
 
-    // 🧩 Kafka consumer for chat summaries
-    let (chat_summary_tx, chat_summary_map) = {
-        let (tx, _rx) = broadcast::channel::<ChatSummary>(32);
-        let map = Arc::new(RwLock::new(HashMap::new()));
-        spawn_chat_summary_consumer(
-            "localhost:9092".to_string(),
-            "user_messages".to_string(),
-            tx.clone(),
-            map.clone(),
-        ).await;
-        (tx, map)
-    };
+    // 🧠 Shared in-memory maps
+    // Keep all messages per chat in memory
+    let (chat_tx, _rx) = broadcast::channel::<MessageEvent>(64);
+    let messages_map: Arc<RwLock<HashMap<String, Vec<MessageEvent>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
 
-use tower_http::cors::{CorsLayer, Any};
+    // 🚀 Start Kafka consumer (store & broadcast events)
+    let kafka_brokers = "localhost:9092".to_string();
+    let kafka_topic = "messages".to_string();
+    spawn_chat_summary_consumer(
+        kafka_brokers,
+        kafka_topic,
+        chat_tx.clone(),
+        messages_map.clone(),
+    )
+    .await;
 
-// 🧠 Chat summary routes
-let chat_state = ChatSummaryState {
-    tx: chat_summary_tx.clone(),
-    data: chat_summary_map.clone(),
+let route_state = RouteState {
+    tx: chat_tx.clone(),
+    messages: messages_map.clone(),
 };
 
-let cors = CorsLayer::new()
-    .allow_origin(Any)
-    .allow_methods(Any)
-    .allow_headers(Any);
+    // 🌐 CORS
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
 
 let app = Router::new()
     .merge(chat_summary_router())
-    .with_state(chat_state)
+    .merge(chat_thread_router())
+    .with_state(route_state)
     .layer(cors);
-let addr: std::net::SocketAddr = ([0, 0, 0, 0], 8080).into();
-info!("🚀 Server running on {}", addr);
 
+
+    // 🌍 Serve
+    let addr: SocketAddr = ([0, 0, 0, 0], 8080).into();
+    info!("🚀 Server running on {}", addr);
 
     let listener = TcpListener::bind(addr).await?;
     tokio::select! {

@@ -5,7 +5,7 @@ set -e
 KAFKA_BIN="/srv/mistral/kafka/bin"
 BOOTSTRAP="localhost:9092"
 
-TOPICS=("user_messages" "assistant_responses")
+TOPICS=("messages" "assistant_responses")
 
 for t in "${TOPICS[@]}"; do
   echo "📦 Creating topic: $t"
