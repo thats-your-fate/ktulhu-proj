@@ -40,41 +40,6 @@ async function waitForSocket(unixPath: string, maxAttempts = 30): Promise<void> 
   throw new Error(`Timeout waiting for worker socket: ${absPath}`);
 }
 
-// 🧩 Kafka bridge worker (optional)
-function startKafkaBridge() {
-  const bridgePath = path.resolve(__dirname, "kafkaBridge.js");
-  const worker = new Worker(bridgePath);
-
-  worker.on("message", ({ topic, payload }) => {
-    try {
-      const { message: msg, ts, response } = payload;
-      const device = msg?.device_hash || payload.device_hash;
-      if (!device) return;
-
-      const summary = {
-        type: "chat_summary",
-        data: {
-          chat_id: msg?.chat_id || msg?.session_id,
-          session_id: msg?.session_id,
-          device_hash: device,
-          preview: msg?.text?.slice(0, 80) || response?.slice(0, 80) || "",
-          ts,
-          source: topic,
-        },
-      };
-
-      const json = JSON.stringify(summary);
-      for (const ws of deviceClients.get(device) ?? []) {
-        if (ws.readyState === WebSocket.OPEN) ws.send(json);
-      }
-    } catch (err) {
-      log.err(`Kafka bridge relay error: ${(err as Error).message}`);
-    }
-  });
-
-  worker.on("error", (err) => log.err("Kafka bridge worker error: " + err.message));
-  log.ok("🪣 Kafka bridge worker started");
-}
 
 export async function startSocketServer(unixPath: string, port: number) {
   await ensureKafka();
@@ -86,7 +51,6 @@ export async function startSocketServer(unixPath: string, port: number) {
   });
 
   const wss = new WebSocketServer({ server });
-  startKafkaBridge();
 
   wss.on("connection", (ws: WebSocket) => {
     const clientId = randomUUID();

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-import socket, json, os, sys, torch, re, time
+import socket, json, os, sys, torch, re, time, warnings
 from threading import Thread
 from transformers import AutoTokenizer, AutoModelForCausalLM, TextIteratorStreamer
+from transformers.utils import logging as hf_logging
 
 # ────────────────────────────────────────────────
 # ⚙️  Args & setup
@@ -16,6 +17,16 @@ try:
 except FileNotFoundError:
     pass
 
+# 🧹 Quiet mode: suppress irrelevant transformer / torch logs
+os.environ.update({
+    "TRANSFORMERS_VERBOSITY": "error",
+    "TOKENIZERS_PARALLELISM": "false",
+    "HF_HUB_DISABLE_TELEMETRY": "1",
+    "TORCH_CPP_LOG_LEVEL": "ERROR"
+})
+warnings.filterwarnings("ignore")
+hf_logging.set_verbosity_error()
+
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"🧠 Loading {MODEL_NAME} on {device}...", flush=True)
 
@@ -27,6 +38,7 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 model.eval()
 print(f"✅ Ready and listening on {SOCK_PATH}", flush=True)
+
 
 # ────────────────────────────────────────────────
 # 🧹 Prompt utilities
@@ -45,18 +57,40 @@ def normalize_prompt(raw: str) -> str:
 
 
 def build_reasoning_prompt(user_text: str) -> str:
-    """
-    Add an invisible reasoning layer.
-    This gives the model clarity before generation, without showing it to the user.
-    """
+    """Create the instruct-style reasoning prompt for generation."""
     normalized = normalize_prompt(user_text)
     meta_prefix = (
-        "You are an expert reasoning assistant. "
-        "First interpret the user's intent precisely, clarify ambiguous parts internally, "
-        "then produce a single clear, helpful answer.\n\n"
-        f"User request: {normalized}\n\nResponse:"
+        "You are a friendly conversational reasoning assistant. "
+        "Always respond directly to the user in first person. "
+        "Do not describe the user’s actions or thoughts. "
+        "Just answer clearly and conversationally.\n\n"
+        f"User request: {normalized}\n\nAssistant:"
     )
     return meta_prefix
+
+
+# ────────────────────────────────────────────────
+# 🧠 Meta-response rewriter (to fix detached outputs)
+# ────────────────────────────────────────────────
+def rewrite_if_meta_response(text: str) -> str:
+    """
+    Detect detached or report-like responses (e.g. 'The user is asking...')
+    and rewrite them into natural chat tone.
+    """
+    lowered = text.lower().strip()
+
+    # Quick pattern detection
+    if lowered.startswith("the user is") or lowered.startswith("the user wants") \
+       or lowered.startswith("the user has") or lowered.startswith("the user seeks"):
+        # Replace patterns
+        text = re.sub(r"(?i)^the user is (asking|inquiring|seeking|wondering)", "You're", text)
+        text = re.sub(r"(?i)^the user wants to know", "You’d like to know", text)
+        text = re.sub(r"(?i)^the user", "You", text)
+        if not text.endswith("."):
+            text += "."
+        text += " Here's what I can tell you:"
+    return text
+
 
 # ────────────────────────────────────────────────
 # 🧠 Summarizer helper (fixed prompt + fallback)
@@ -102,7 +136,7 @@ def stream_infer(prompt: str, conn, uid: str):
             **inputs,
             streamer=streamer,
             max_new_tokens=1024,
-            temperature=0.5,
+            temperature=0.6,
             top_p=0.9,
             do_sample=True,
             pad_token_id=tokenizer.eos_token_id,
@@ -110,15 +144,19 @@ def stream_infer(prompt: str, conn, uid: str):
     )
     thread.start()
 
+    full_response = ""
     try:
         for new_text in streamer:
+            full_response += new_text
             msg = json.dumps({"id": uid, "token": new_text})
             conn.sendall(msg.encode() + b"\n")
     except Exception as e:
         conn.sendall(json.dumps({"id": uid, "error": str(e)}).encode() + b"\n")
 
     # ✅ Wrap up
-    conn.sendall(json.dumps({"id": uid, "done": True}).encode() + b"\n")
+    cleaned = full_response.strip()
+    cleaned = rewrite_if_meta_response(cleaned)
+    conn.sendall(json.dumps({"id": uid, "final": cleaned, "done": True}).encode() + b"\n")
     thread.join()
     time.sleep(0.05)  # small flush delay
 

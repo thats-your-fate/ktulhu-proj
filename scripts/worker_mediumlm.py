@@ -29,8 +29,12 @@ print(f"✅ Summarizer ready and listening on {SOCK_PATH}", flush=True)
 # 🧠 Smart summarization helper
 # ────────────────────────────────────────────────
 def summarize(raw_text: str) -> str:
-    """Generate a short, robust headline even for messy or meaningless input."""
-    # Normalize and strip control noise
+    """
+    Generate a meaningful one-sentence summary or short paragraph title
+    that captures the key intent and topic of the user's message.
+    """
+
+    # ── Normalize input ─────────────────────────
     text = raw_text.strip()
     text = re.sub(r"http\S+", "", text)
     text = re.sub(r"[{}[\]<>`*#_]", "", text)
@@ -38,45 +42,54 @@ def summarize(raw_text: str) -> str:
     text = re.sub(r"\\n", " ", text)
     text = text.strip()
 
-    # Keep it short for the model context
-    if len(text.split()) > 200:
-        text = " ".join(text.split()[:200])
-    preview = textwrap.shorten(text, width=120, placeholder="…")
+    if not text:
+        return "General request"
+
+    # limit to ~400 tokens worth of text
+    words = text.split()
+    if len(words) > 400:
+        text = " ".join(words[:400])
+
+    preview = textwrap.shorten(text, width=200, placeholder="…")
     print(f"📥 Cleaned preview:\n{preview}\n", flush=True)
 
-    # Build an instruct-style prompt that invites abstraction
+    # ── Build a stronger instruction ────────────
     prompt = (
-        "You are a headline generator. "
-        "Write a very short 3–5 word title that describes roughly what this text is about, "
-        "even if it is messy or incomplete.\n\n"
-        f"Text:\n{text}\n\nHeadline:"
+        "You are an expert summarizer. "
+        "Read the following user text carefully and write a clear, helpful summary "
+        "in one or two sentences that captures the main intent, topic, or problem. "
+        "Avoid generic titles like 'General request'. "
+        "If technical, describe the domain briefly (e.g., Node.js socket issue, GPU inference, etc.).\n\n"
+        f"USER TEXT:\n{text}\n\nSUMMARY:"
     )
 
+    # ── Tokenize & generate ─────────────────────
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
     with torch.inference_mode():
         output = model.generate(
             **inputs,
-            max_new_tokens=16,
-            temperature=0.4,
+            max_new_tokens=80,      # ⬆️ allow longer summaries
+            temperature=0.6,        # ⬆️ slightly creative but focused
             top_p=0.9,
-            do_sample=False,
+            do_sample=True,
+            repetition_penalty=1.1,
             pad_token_id=tokenizer.eos_token_id,
         )
 
-    out = tokenizer.decode(output[0], skip_special_tokens=True)
-    print(f"🧩 Raw model output: {repr(out)}", flush=True)
+    decoded = tokenizer.decode(output[0], skip_special_tokens=True)
+    print(f"🧩 Raw model output: {repr(decoded)}", flush=True)
 
-    # Sanitize and clean the model continuation
-    out = out.replace(prompt, "")
-    out = re.sub(r"(?i)(headline|title|text):", "", out)
-    out = re.sub(r"[^A-Za-z0-9\s\-\_]", "", out)
+    # ── Extract summary portion ─────────────────
+    out = decoded[len(prompt):].strip()
+    out = re.sub(r"(?i)(summary|headline|title|text)[:\-]\s*", "", out)
     out = re.sub(r"\s+", " ", out).strip()
 
-    # Fallback safety
-    if not out or len(out.split()) < 2:
-        out = "User message"
-    elif len(out.split()) > 8:
-        out = "General message"
+    # Clip safely
+    if len(out.split()) > 60:
+        out = " ".join(out.split()[:60]) + "…"
+
+    if not out or len(out.split()) < 3:
+        out = "General request"
 
     print(f"✅ Final summary: {out}\n{'─'*60}", flush=True)
     return out
