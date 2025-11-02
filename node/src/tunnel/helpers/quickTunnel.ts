@@ -8,6 +8,28 @@ export async function createQuickTunnel(
   port: number,
   timeoutMs = 15000
 ): Promise<TunnelInfo> {
+  // ✅ Check for a preconfigured tunnel from config.json (via Rust env)
+  const staticTunnel = process.env.PUBLIC_TUNNEL;
+  if (staticTunnel) {
+    const id = `static-${Date.now()}`;
+    log.info(`🌐 Using static configured tunnel: ${staticTunnel}`);
+
+    const info: TunnelInfo = {
+      id,
+      url: staticTunnel,
+      port,
+      mode: "static",
+      proc: null,
+      name: null,
+      hostname: staticTunnel.replace(/^https?:\/\//, ""),
+    };
+
+    tunnels.set(id, info);
+    writeManifest(tunnels);
+    return info;
+  }
+
+  // ✅ No static tunnel → create a real Quick Tunnel
   const id = Math.random().toString(36).slice(2, 10);
   log.info(`🌐 [${id}] creating quick tunnel for http://localhost:${port}`);
 

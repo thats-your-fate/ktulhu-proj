@@ -103,21 +103,29 @@ fn truncate(s: &str, max_len: usize) -> String {
 
 /// 🧼 Utility: clean malformed JSON/Markdown text safely
 fn clean_text(input: Option<String>) -> String {
-    if let Some(mut t) = input {
-        // Strip newlines, invisible unicode, markdown artifacts, null bytes
-        t = t
-            .replace('\n', " ")
+    if let Some(t) = input {
+        let trimmed = t.trim();
+
+        // 🧩 Try to parse JSON first — if valid, keep it as-is
+        if trimmed.starts_with('{') && trimmed.ends_with('}') {
+            if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
+                return trimmed.to_string();
+            }
+        }
+
+        // 🧼 Otherwise, sanitize plain text (no JSON semantics)
+        trimmed
             .replace('\r', " ")
+            .replace('\n', " ")
             .replace('\t', " ")
             .replace('\u{0000}', "")
             .chars()
             .filter(|c| !c.is_control() || *c == '\n')
-            .collect::<String>();
-
-        // Remove stray brackets/quotes
-        t = t.trim_matches(|c| c == '{' || c == '}' || c == '"' || c == '\'').to_string();
-        t.trim().to_string()
+            .collect::<String>()
+            .trim()
+            .to_string()
     } else {
         String::new()
     }
 }
+

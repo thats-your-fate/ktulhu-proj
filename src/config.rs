@@ -5,23 +5,18 @@ use std::path::PathBuf;
 pub struct NodeProcessConfig {
     /// Friendly name (for logs)
     pub name: String,
-
-    /// Path to the Node.js script to run (relative to /scripts)
     pub script: String,
-
-    /// List of sockets this Node process should connect to
     pub sockets: Vec<String>,
 
-    /// Optional environment variables for the Node process
     #[serde(default)]
     pub env: Option<Vec<(String, String)>>,
-
-    /// Path for Node orchestrator working dir (Python uses `cwd` for scripts)
     pub cwd: Option<String>,
 
-    /// Optional Node-specific CWD override
+
     #[serde(default)]
     pub nodecwd: Option<String>,
+        #[serde(default)]
+    pub tunnel: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -32,6 +27,13 @@ pub struct WorkerConfig {
     pub model: String,
     #[serde(default)]
     pub script: Option<String>,
+}
+
+/// Kafka connection settings
+#[derive(Debug, Deserialize, Clone)]
+pub struct KafkaConfig {
+    pub brokers: String,
+    pub topic: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -46,6 +48,10 @@ pub struct AppConfig {
     /// Optional Hugging Face home/cache directory
     #[serde(default)]
     pub hf_home: Option<PathBuf>,
+
+    /// Optional Kafka broker/topic configuration
+    #[serde(default)]
+    pub kafka: Option<KafkaConfig>,
 }
 
 impl AppConfig {

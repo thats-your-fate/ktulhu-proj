@@ -3,17 +3,37 @@ import { ensureKafka } from "./client";
 import { log } from "../utils/logger";
 import { ChatMessage } from "../types";
 
+/** Safely prepare a message for Kafka */
+function safeSerializeMessage(msg: ChatMessage): string {
+  // just remove null bytes; let JSON.stringify handle escaping
+  const safeMsg = { ...msg };
+  if (typeof safeMsg.text === "string") {
+    safeMsg.text = safeMsg.text.replace(/\u0000/g, "");
+  }
+  if (typeof safeMsg.summary === "string") {
+    safeMsg.summary = safeMsg.summary.replace(/\u0000/g, "");
+  }
+  return JSON.stringify(safeMsg);
+}
+
 export async function emitMessageToKafka(
   msg: ChatMessage,
   topic = "messages"
 ): Promise<void> {
   try {
     const producer = await ensureKafka();
+    const serialized = safeSerializeMessage(msg);
+
     await producer.send({
       topic,
-      messages: [{ key: msg.chat_id, value: JSON.stringify(msg) }],
+      messages: [{ key: msg.chat_id, value: serialized }],
     });
-    log.ok(`🪣 Kafka → ${topic} (${msg.role}: ${msg.text?.slice(0, 60) ?? msg.summary?.slice(0, 60)}...)`);
+
+    log.ok(
+      `🪣 Kafka → ${topic} (${msg.role}: ${
+        msg.text?.slice(0, 60) ?? msg.summary?.slice(0, 60)
+      }...)`
+    );
   } catch (err: any) {
     log.err(`Kafka emit failed (${msg.role}): ${err.message}`);
   }

@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
 
     let registry = Arc::new(ProcessRegistry::default());
 
-    // 🧠 Spawn Python inference workers
+    //  Spawn Python inference workers
     let raw_workers = spawn_workers_from_config(&cfg, registry.clone()).await;
     let worker_states = raw_workers
         .into_iter()
@@ -52,37 +52,45 @@ async fn main() -> anyhow::Result<()> {
     // 🪄 Check Node.js binary
     let node_bin = Path::new("./node-v22-linux-x64/bin/node");
     if !node_bin.exists() {
-        warn!("⚠️ Node.js v22 binary not found. Run `./init_node.sh` to install it.");
+        warn!(" Node.js v22 binary not found. Run `./init_node.sh` to install it.");
     } else {
-        info!("✅ Found local Node.js binary at {}", node_bin.display());
+        info!(" Found local Node.js binary at {}", node_bin.display());
     }
 
     // 🚀 Optional Node.js proxy
     spawn_node_process_from_config(&cfg, registry.clone()).await;
 
-    // 📡 App state
+    //  App state
     let (status_tx, _) = broadcast::channel(32);
     let _app_state = AppState {
         status_tx,
         workers: Arc::new(Mutex::new(worker_states)),
     };
 
-    // 🧠 Shared in-memory maps
+    //  Shared in-memory maps
     // Keep all messages per chat in memory
     let (chat_tx, _rx) = broadcast::channel::<MessageEvent>(64);
     let messages_map: Arc<RwLock<HashMap<String, Vec<MessageEvent>>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
-    // 🚀 Start Kafka consumer (store & broadcast events)
-    let kafka_brokers = "localhost:9092".to_string();
-    let kafka_topic = "messages".to_string();
+    //  Start Kafka consumer (store & broadcast events)
+//  Start Kafka consumer (store & broadcast events)
+if let Some(kafka_cfg) = &cfg.kafka {
+    info!(
+        "📡 Starting Kafka consumer at {} (topic: {})",
+        kafka_cfg.brokers, kafka_cfg.topic
+    );
     spawn_chat_summary_consumer(
-        kafka_brokers,
-        kafka_topic,
+        kafka_cfg.brokers.clone(),
+        kafka_cfg.topic.clone(),
         chat_tx.clone(),
         messages_map.clone(),
     )
     .await;
+} else {
+    warn!("⚠️ No Kafka configuration found in config.json — skipping Kafka consumer startup.");
+}
+
 
 let route_state = RouteState {
     tx: chat_tx.clone(),

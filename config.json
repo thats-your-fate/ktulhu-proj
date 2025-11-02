@@ -24,7 +24,13 @@
       ["MAX_CONCURRENCY", "3"]
     ],
     "cwd": "/srv/mistral/ktulhuUpgarade/scripts",
-    "nodecwd": "/srv/mistral/ktulhuUpgarade/node/dist"
+    "nodecwd": "/srv/mistral/ktulhuUpgarade/node/dist",
+    "tunnel": "https://inference.ktulhu.com"
 
+  },
+    "kafka": {
+    "brokers": "localhost:9092",
+    "topic": "messages"
   }
 }
+

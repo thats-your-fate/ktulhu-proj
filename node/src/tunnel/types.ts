@@ -1,13 +1,15 @@
 import { ChildProcess } from "child_process";
 
-export type TunnelMode = "quick" | "account";
+export type TunnelMode = "account" | "quick" | "static";
 
 export interface TunnelInfo {
   id: string;
-  url: string | null;
+  url: string | null; // <-- allow null
   port: number;
-  proc: ChildProcess;
-  mode: TunnelMode;
-  name?: string;
+  mode: "account" | "quick" | "static";
+  proc?: ChildProcess | null;
+  name?: string | null;
   hostname?: string;
 }
+
+

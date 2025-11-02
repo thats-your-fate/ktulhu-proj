@@ -47,18 +47,34 @@ export async function startSocketServer(unixPath: string, port: number) {
 
       const device = (ws as any).deviceHash || null;
       const chatId = data.chat_id || data.session_id || clientId;
-      const text = data.text || data.prompt || data.message?.text || "";
+      // 🧩 Extract clean text safely
+     // 🧩 Extract clean text safely (fixed version)
+let text = "";
 
-      if (text.trim()) {
-        await emitMessageToKafka({
-          role: "user",
-          chat_id: chatId,
-          session_id: data.session_id,
-          device_hash: device,
-          text,
-          ts: Date.now(),
-        });
-      }
+if (typeof data.text === "string") {
+  // direct string
+  text = data.text;
+} else if (typeof data.text === "object" && data.text !== null) {
+  // extract nested "text" field if present
+  text = data.text.text || data.text.prompt || "";
+} else if (typeof data.prompt === "string") {
+  text = data.prompt;
+} else if (typeof data.message?.text === "string") {
+  text = data.message.text;
+}
+
+if (typeof text === "string" && text.trim().length > 0) {
+  await emitMessageToKafka({
+    role: "user",
+    chat_id: chatId,
+    session_id: data.session_id,
+    device_hash: device,
+    text: text.trim(), // ✅ send actual user text
+    ts: Date.now(),
+  });
+}
+
+
 
       try {
         const sock = net.createConnection(unixPath);

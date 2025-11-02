@@ -6,13 +6,12 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
-use tracing::info;
+use tracing::{info, warn};
 use tokio::sync::Mutex;
 
 /// 🧩 Spawns all Python workers from config
 pub async fn spawn_workers_from_config(cfg: &AppConfig, registry: Arc<ProcessRegistry>) -> Vec<Worker> {
     let mut workers = Vec::new();
-    // fixed scripts dir (hardcoded for now)
     let scripts_dir = PathBuf::from("/srv/mistral/ktulhuUpgarade/scripts");
 
     for w in &cfg.workers {
@@ -34,13 +33,9 @@ pub async fn spawn_workers_from_config(cfg: &AppConfig, registry: Arc<ProcessReg
 
         info!(
             "🚀 Spawning `{}` using `{}` (model: {}, GPU {})",
-            w.name,
-            script_path.display(),
-            w.model,
-            w.gpu
+            w.name, script_path.display(), w.model, w.gpu
         );
 
-        // Python binary from config or fallback
         let python_bin = cfg
             .python_bin
             .clone()
@@ -59,7 +54,6 @@ pub async fn spawn_workers_from_config(cfg: &AppConfig, registry: Arc<ProcessReg
         let child = Arc::new(Mutex::new(
             cmd.spawn().unwrap_or_else(|e| panic!("❌ Failed to spawn {}: {}", w.name, e)),
         ));
-
         registry.add(child.clone()).await;
 
         workers.push(Worker {
@@ -84,15 +78,12 @@ pub async fn spawn_node_process_from_config(cfg: &AppConfig, registry: Arc<Proce
 
 /// 🧩 Launch Node.js proxy/orchestrator
 pub async fn spawn_node_process(cfg: &NodeProcessConfig, registry: Arc<ProcessRegistry>) {
-    // use nodecwd if provided, else fallback
     let cwd = cfg.nodecwd.clone().unwrap_or_else(|| "/srv/mistral/ktulhuUpgarade/node/dist".into());
     let script_path = PathBuf::from(&cwd).join(&cfg.script);
 
     info!(
         "🧠 Spawning Node.js process `{}` -> `{}` with sockets: {:?}",
-        cfg.name,
-        script_path.display(),
-        cfg.sockets
+        cfg.name, script_path.display(), cfg.sockets
     );
 
     let local_node = PathBuf::from("./node-v22-linux-x64/bin/node");
@@ -109,21 +100,26 @@ pub async fn spawn_node_process(cfg: &NodeProcessConfig, registry: Arc<ProcessRe
         .stderr(Stdio::inherit())
         .current_dir(&cwd);
 
+    // 🧩 Pass custom environment variables
     if let Some(envs) = &cfg.env {
         for (k, v) in envs {
             cmd.env(k, v);
         }
     }
 
+    // 🌐 Inject tunnel from config.json as PUBLIC_TUNNEL
+    if let Some(tunnel) = &cfg.tunnel {
+        cmd.env("PUBLIC_TUNNEL", tunnel);
+        info!("🌐 Injected PUBLIC_TUNNEL={}", tunnel);
+    } else {
+        warn!("⚠️ No tunnel configured for Node process — will use quick/ephemeral mode.");
+    }
+
     let child = Arc::new(Mutex::new(
         cmd.spawn().unwrap_or_else(|e| {
-            panic!(
-                "❌ Failed to spawn Node.js process `{}`: {}",
-                cfg.name, e
-            )
+            panic!("❌ Failed to spawn Node.js process `{}`: {}", cfg.name, e)
         }),
     ));
-
     registry.add(child.clone()).await;
 
     let name = cfg.name.clone();

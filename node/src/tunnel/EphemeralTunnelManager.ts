@@ -38,7 +38,7 @@ export class EphemeralTunnelManager {
     const t = this.tunnels.get(id);
     if (!t) return;
     log.warn(`[${id}] deleting tunnel`);
-    t.proc.kill("SIGTERM");
+t.proc?.kill("SIGTERM");
     if (t.mode === "account" && t.name) {
       try {
         execSync(`cloudflared tunnel delete ${t.name} -f`, { cwd: CLOUDFLARED_HOME });

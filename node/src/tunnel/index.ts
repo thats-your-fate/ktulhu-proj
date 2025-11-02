@@ -59,7 +59,7 @@ export class EphemeralTunnelManager {
     if (!t) return;
 
     log.warn(`[${id}] deleting tunnel`);
-    t.proc.kill("SIGTERM");
+t.proc?.kill("SIGTERM");
 
     if (t.mode === "account" && t.name) {
       try {

@@ -7,7 +7,7 @@ import type { TunnelInfo } from "../types";
 
 /**
  * Create or reuse an account-bound Cloudflare tunnel.
- * Supports subdomain override and handles existing tunnels safely.
+ * If PUBLIC_TUNNEL is set (from config.json), skip dynamic creation and use that directly.
  */
 export async function createAccountTunnel(
   tunnels: Map<string, TunnelInfo>,
@@ -15,18 +15,37 @@ export async function createAccountTunnel(
   port: number,
   subdomain?: string
 ): Promise<TunnelInfo> {
+  // ✅ Config override from Rust env injection
+  const staticTunnel = process.env.PUBLIC_TUNNEL;
+  if (staticTunnel) {
+    const id = `static-${Date.now()}`;
+    log.info(`🌐 Using static configured tunnel: ${staticTunnel}`);
+
+    const info: TunnelInfo = {
+      id,
+      url: staticTunnel,
+      port,
+      mode: "static",
+      proc: null as any, // no process to manage
+      name: null,
+      hostname: staticTunnel.replace(/^https?:\/\//, ""),
+    };
+
+    tunnels.set(id, info);
+    return info;
+  }
+
+  // ✅ No static tunnel → fall back to real account tunnel
   const cert = path.join(CLOUDFLARED_HOME, "cert.pem");
   if (!fs.existsSync(cert)) {
     throw new Error("❌ No ~/.cloudflared/cert.pem found; cannot create account tunnel.");
   }
 
-  // ✅ Prefer user-specified subdomain (e.g. "chat1")
+  // Prefer user-specified subdomain (e.g. "chat1")
   const name = subdomain || `temp-${Math.random().toString(36).slice(2, 8)}`;
   const hostname = `${name}.${domain}`;
-
   log.info(`🔧 [account] creating tunnel '${name}' → ${hostname}`);
 
-  // ✅ Try to create tunnel or reuse existing one if it already exists
   let credentialsFile: string;
 
   try {
@@ -38,14 +57,14 @@ export async function createAccountTunnel(
   } catch (err: any) {
     const msg = err.message || "";
     if (msg.includes("already exists")) {
-      log.warn(`⚠️  Tunnel '${name}' already exists — reusing existing credentials.`);
+      log.warn(`⚠️ Tunnel '${name}' already exists — reusing existing credentials.`);
       credentialsFile = path.join(CLOUDFLARED_HOME, `${name}.json`);
     } else {
       throw err;
     }
   }
 
-  // ✅ Create Cloudflare config file for the tunnel
+  // Write Cloudflare config for the tunnel
   const cfgPath = path.join(CLOUDFLARED_HOME, `${name}.yml`);
   const cfg = [
     `tunnel: ${name}`,
@@ -61,15 +80,15 @@ export async function createAccountTunnel(
   fs.writeFileSync(cfgPath, cfg);
   log.info(`📝 Wrote config: ${cfgPath}`);
 
-  // ✅ Ensure DNS route exists (CNAME in your Cloudflare zone)
+  // Ensure DNS route exists (CNAME in your Cloudflare zone)
   try {
     execSync(`cloudflared tunnel route dns ${name} ${hostname}`, { cwd: CLOUDFLARED_HOME });
     log.ok(`🌐 Added/verified CNAME for ${hostname}`);
   } catch (dnsErr: any) {
-    log.warn(`⚠️  DNS route may already exist: ${dnsErr.message}`);
+    log.warn(`⚠️ DNS route may already exist: ${dnsErr.message}`);
   }
 
-  // ✅ Start tunnel process
+  // Start tunnel process
   const proc = spawn("cloudflared", ["--config", cfgPath, "tunnel", "run", name], {
     cwd: CLOUDFLARED_HOME,
     stdio: ["ignore", "pipe", "pipe"],
