@@ -13,7 +13,7 @@ use tokio::{
     sync::{broadcast, Mutex, RwLock},
 };
 use tracing::{info, warn};
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{Any, CorsLayer,AllowOrigin};
 
 use crate::{
     app_state::{AppState, WorkerState},
@@ -30,6 +30,10 @@ use crate::routes::{
     chat_thread::router as chat_thread_router,
     state::RouteState,
 };
+
+use http::Method;
+use std::time::Duration;
+
 
 
 #[tokio::main]
@@ -97,11 +101,21 @@ let route_state = RouteState {
     messages: messages_map.clone(),
 };
 
-    // 🌐 CORS
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+
+
+let cors = CorsLayer::new()
+    .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+    .allow_headers(Any)
+    .max_age(Duration::from_secs(3600))
+    .allow_origin(AllowOrigin::predicate(|origin, _req_head| {
+        if let Ok(origin_str) = origin.to_str() {
+            origin_str.ends_with(".ktulhu.com")
+                || origin_str.starts_with("http://localhost")
+                || origin_str.starts_with("http://127.0.0.1")
+        } else {
+            false
+        }
+    }));
 
 
 let app = Router::new()
