@@ -6,12 +6,6 @@
       "socket": "/tmp/infer_b.sock",
       "gpu": "0",
       "model": "mistralai/Mistral-7B-Instruct-v0.2"
-    },
-        {
-      "name": "summarizing",
-      "socket": "/tmp/infer_c.sock",
-      "gpu": "0",
-      "model": "microsoft/phi-3-mini-4k-instruct"
     }
     
   ],

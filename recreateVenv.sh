@@ -4,7 +4,7 @@ set -e
 # ────────────────────────────────────────────────
 # 📦 Recreate Python venv for Ktulhu project
 # Automatically detects current path and reinstalls dependencies.
-# Run:  ./scripts/recreate_venv.sh
+# Run:  ./recreate_venv.sh
 # ────────────────────────────────────────────────
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
