@@ -48,24 +48,53 @@ def main():
         while True:
             conn, _ = server.accept()
             with conn:
+                buffer = ""   # <-- accumulate fragments here
+
                 try:
-                    data = conn.recv(65536)
-                    if not data:
-                        continue
+                    while True:
+                        chunk = conn.recv(65536)
+                        if not chunk:
+                            break
 
-                    # Support multiple JSON objects in one recv
-                    for raw in data.decode().splitlines():
-                        if not raw.strip():
-                            continue
-                        req = json.loads(raw)
+                        buffer += chunk.decode()
 
-                        uid = req.get("id", "")
-                        text = req.get("text", "")
-                        chat_id = req.get("chat_id") or req.get("session_id")
+                        # Process full JSON lines only
+                        while "\n" in buffer:
+                            raw, buffer = buffer.split("\n", 1)
+                            raw = raw.strip()
 
-                        print(f"🔍 Incoming chat_id={chat_id} uid={uid} text={text[:60]!r}", flush=True)
+                            if not raw:
+                                continue
 
-                        stream_infer(text, conn, uid, tokenizer, model, device, chat_id=chat_id)
+                            # Parse JSON safely
+                            try:
+                                req = json.loads(raw)
+                            except Exception:
+                                print(f"⚠️ Ignoring invalid JSON fragment: {raw!r}",
+                                      flush=True)
+                                continue
+
+                            # Extract fields
+                            uid = req.get("id", "")
+                            text = req.get("text", "") or ""
+                            chat_id = req.get("chat_id") or req.get("session_id")
+
+                            print(
+                                f"🔍 Incoming chat_id={chat_id} uid={uid} "
+                                f"text={text[:60]!r}",
+                                flush=True
+                            )
+
+                            # 🔥 Run inference ONCE per full JSON object
+                            stream_infer(
+                                text,
+                                conn,
+                                uid,
+                                tokenizer,
+                                model,
+                                device,
+                                chat_id=chat_id,
+                            )
 
                 except Exception as e:
                     err = {"error": str(e)}
@@ -73,4 +102,5 @@ def main():
                         conn.sendall(json.dumps(err).encode() + b"\n")
                     except Exception:
                         pass
+
                     print(f"⚠️ Worker error: {e}", flush=True)

@@ -25,67 +25,57 @@ export async function startSocketServer(unixPath: string, port: number) {
     (ws as any).clientId = clientId;
     log.ok(`🔌 WebSocket connected → clientId=${clientId}`);
 
-    ws.on("message", async (msg) => {
-      const raw = msg.toString();
-      let data: any;
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        log.err("❌ Invalid JSON from WS client");
-        return;
-      }
+ws.on("message", async (msg) => {
+  const raw = msg.toString();
+  let data: any;
 
-      if (data.type === "register" && data.device_hash) {
-        const device = data.device_hash;
-        const set = deviceClients.get(device) || new Set<WebSocket>();
-        set.add(ws);
-        deviceClients.set(device, set);
-        (ws as any).deviceHash = device;
-        log.ok(`📱 Registered device ${device}`);
-        return;
-      }
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    log.err("❌ Invalid JSON from WS client");
+    return;
+  }
 
-      const device = (ws as any).deviceHash || null;
-      const chatId = data.chat_id || data.session_id || clientId;
-      // 🧩 Extract clean text safely
-     // 🧩 Extract clean text safely (fixed version)
-let text = "";
+  // REGISTER
+  if (data.type === "register" && data.device_hash) {
+    const device = data.device_hash;
+    const set = deviceClients.get(device) || new Set<WebSocket>();
+    set.add(ws);
+    deviceClients.set(device, set);
+    (ws as any).deviceHash = device;
+    log.ok(`📱 Registered device ${device}`);
+    return;
+  }
 
-if (typeof data.text === "string") {
-  // direct string
-  text = data.text;
-} else if (typeof data.text === "object" && data.text !== null) {
-  // extract nested "text" field if present
-  text = data.text.text || data.text.prompt || "";
-} else if (typeof data.prompt === "string") {
-  text = data.prompt;
-} else if (typeof data.message?.text === "string") {
-  text = data.message.text;
-}
+  const device = (ws as any).deviceHash || null;
+  const chatId = data.chat_id || data.session_id || clientId;
 
-if (typeof text === "string" && text.trim().length > 0) {
-  await emitMessageToKafka({
-    role: "user",
-    chat_id: chatId,
-    session_id: data.session_id,
-    device_hash: device,
-    text: text.trim(), // ✅ send actual user text
-    ts: Date.now(),
-  });
-}
-
-
-
-      try {
-        const sock = net.createConnection(unixPath);
-        sock.setKeepAlive(true, 5000);
-        sock.write(raw + "\n");
-        handleWorkerStream(sock, ws, data, chatId, deviceClients);
-      } catch (err: any) {
-        log.err(` Worker socket error: ${err.message}`);
-        ws.send(JSON.stringify({ error: err.message }));
-      }
+  // ⭐ ONLY forward user messages ONCE
+  if (data.role === "user" && typeof data.text === "string") {
+    await emitMessageToKafka({
+      role: "user",
+      chat_id: chatId,
+      session_id: data.session_id,
+      device_hash: device,
+      text: data.text.trim(),
+      ts: Date.now(),
     });
+  }
+
+  // ⭐ send to worker
+  try {
+    const sock = net.createConnection(unixPath);
+    sock.setKeepAlive(true, 5000);
+    console.log("➡️ SENDING TO WORKER:", raw);
+    sock.write(raw + "\n");
+
+    handleWorkerStream(sock, ws, data, chatId, deviceClients);
+  } catch (err: any) {
+    log.err(` Worker socket error: ${err.message}`);
+    ws.send(JSON.stringify({ error: err.message }));
+  }
+});
+
 
     ws.on("close", () => {
       const device = (ws as any).deviceHash;

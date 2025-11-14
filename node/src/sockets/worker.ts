@@ -12,46 +12,70 @@ export function handleWorkerStream(
 ) {
   let buffer = "";
   let fullResponse = "";
+  let hasStarted = false;
 
   sock.on("data", (chunk) => {
     buffer += chunk.toString();
-    const parts = buffer.split("\n");
-    buffer = parts.pop()!;
 
-    for (const line of parts) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
+    // process only full lines
+    let newlineIndex;
+    while ((newlineIndex = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1); // remove processed part
+
+      if (!line) continue;
+
+      let parsed: any = null;
 
       try {
-        const parsed = JSON.parse(trimmed);
+        parsed = JSON.parse(line);
 
+        // SUMMARY
         if (parsed.summary) {
           emitSummaryBroadcast(ws, parsed.summary, data, chatId, deviceClients);
           continue;
         }
 
-        if (parsed.token) fullResponse += parsed.token;
-        ws.send(JSON.stringify(parsed));
+        // STREAM TOKENS
+        if (parsed.token) {
+          hasStarted = true;
+          fullResponse += parsed.token;
+        }
 
-        if (parsed.done) sock.end();
+        // FORWARD TO BROWSER
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(parsed));
+        }
+
+        // DONE
+        if (parsed.done) {
+          sock.end();
+        }
       } catch {
-        fullResponse += trimmed;
-        ws.send(JSON.stringify({ token: trimmed }));
+        // ❌ DO NOT stream broken JSON → skip it entirely
+        log.warn("⚠️ Skipping incomplete JSON chunk (TCP split)");
+        continue;
       }
     }
   });
 
   sock.on("end", async () => {
+    if (!hasStarted) {
+      log.warn("⚠️ Worker ended without producing tokens (probably TCP fragment)");
+      return;
+    }
+
     const cleaned = fullResponse.replace(/\s+/g, " ").trim();
-    if (cleaned)
-      await emitMessageToKafka({
-        role: "assistant",
-        chat_id: chatId,
-        session_id: data.session_id,
-        device_hash: (ws as any).deviceHash || null,
-        text: cleaned,
-        ts: Date.now(),
-      });
+    if (!cleaned) return;
+
+    await emitMessageToKafka({
+      role: "assistant",
+      chat_id: chatId,
+      session_id: data.session_id,
+      device_hash: (ws as any).deviceHash || null,
+      text: cleaned,
+      ts: Date.now(),
+    });
   });
 
   sock.on("error", (err) => {
