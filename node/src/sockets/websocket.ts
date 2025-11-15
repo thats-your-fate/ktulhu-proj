@@ -50,17 +50,31 @@ ws.on("message", async (msg) => {
   const device = (ws as any).deviceHash || null;
   const chatId = data.chat_id || data.session_id || clientId;
 
-  // ⭐ ONLY forward user messages ONCE
-  if (data.role === "user" && typeof data.text === "string") {
-    await emitMessageToKafka({
-      role: "user",
-      chat_id: chatId,
-      session_id: data.session_id,
-      device_hash: device,
-      text: data.text.trim(),
-      ts: Date.now(),
-    });
-  }
+// EVERYTHING ELSE = USER MESSAGE
+let userText = "";
+
+// Try multiple known shapes
+if (typeof data.text === "string") {
+  userText = data.text;
+} else if (typeof data.prompt === "string") {
+  userText = data.prompt;
+} else if (typeof data.message === "string") {
+  userText = data.message;
+} else if (typeof data.text === "object" && data.text !== null) {
+  userText = data.text.text || data.text.prompt || "";
+}
+
+if (userText.trim()) {
+  await emitMessageToKafka({
+    role: "user",
+    chat_id: chatId,
+    session_id: data.session_id,
+    device_hash: device,
+    text: userText.trim(),
+    ts: Date.now(),
+  });
+}
+
 
   // ⭐ send to worker
   try {
