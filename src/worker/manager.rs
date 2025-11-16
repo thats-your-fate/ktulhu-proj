@@ -56,14 +56,30 @@ pub async fn spawn_workers_from_config(cfg: &AppConfig, registry: Arc<ProcessReg
         ));
         registry.add(child.clone()).await;
 
+        let worker = Worker {
+    name: w.name.clone(),
+    socket_path: w.socket.clone(),
+    process: child.clone(), 
+};
+
+info!(
+    "Spawned worker {} at {} (process: {:?})",
+    worker.name,
+    worker.socket_path,
+    worker.process
+);
+
+workers.push(worker);
+
         workers.push(Worker {
             name: w.name.clone(),
             socket_path: w.socket.clone(),
             process: child,
         });
+
     }
 
-    info!("✅ Spawned {} workers", workers.len());
+
     workers
 }
 
@@ -133,4 +149,5 @@ pub async fn spawn_node_process(cfg: &NodeProcessConfig, registry: Arc<ProcessRe
             Err(e) => tracing::error!("❌ Failed to wait on `{}`: {}", name, e),
         }
     });
+
 }

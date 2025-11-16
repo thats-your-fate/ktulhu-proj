@@ -8,12 +8,8 @@ use axum::{
     Router,
 };
 use serde_json::{json, Value};
-use std::{sync::Arc};
-use tokio::sync::RwLock;
 use tracing::info;
-use futures_util::SinkExt;
 
-use crate::kafka::messages::MessageEvent;
 use crate::routes::state::RouteState;
 
 /// 🧩 Utility: safely unwrap a JSON-encoded string if needed

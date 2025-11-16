@@ -1,17 +1,16 @@
 import { Kafka, Producer } from "kafkajs";
 import { log } from "../utils/logger";
-import { loadEnv } from "../config/env";
 
 let producer: Producer | null = null;
 
 export async function ensureKafka(): Promise<Producer> {
   if (producer) return producer;
 
-  const env = loadEnv();
+
   const brokers =
     process.env.KAFKA_BROKERS?.split(",").map((b) => b.trim()) ||
     ["localhost:9092"];
-  const clientId = process.env.KAFKA_CLIENT_ID || "voxpopuli";
+  const clientId = process.env.KAFKA_CLIENT_ID || "ktulhu_backend";
 
   log.info(`🔌 Initializing Kafka producer`);
   log.info(JSON.stringify({ clientId, brokers }, null, 2));

@@ -29,3 +29,4 @@ def rewrite_if_meta_response(text: str) -> str:
             text += "."
         text += " Here's what I can tell you:"
     return text
+

@@ -5,10 +5,8 @@ use axum::{
     Json, Router,
 };
 use serde_json::json;
-use std::{collections::HashMap, sync::Arc};
-use tokio::sync::RwLock;
 
-use crate::{kafka::messages::MessageEvent, routes::state::RouteState};
+use crate::routes::state::RouteState;
 
 /// Build router for chat thread messages
 pub fn router() -> Router<RouteState> {

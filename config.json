@@ -6,8 +6,7 @@
       "socket": "/tmp/infer_b.sock",
       "gpu": "0",
       "model": "mistralai/Mistral-7B-Instruct-v0.2"
-    }
-    
+    } 
   ],
   "node_process": {
     "name": "index",
@@ -25,6 +24,17 @@
     "kafka": {
     "brokers": "localhost:9092",
     "topic": "messages"
+  },
+  "web_scrapper":[
+            {
+      "name": "search_scraper",
+      "type": "unix_socket",
+      "socket_path": "/tmp/search_scraper.sock"
+    }
+  ],
+  "brave":{
+    "apikey":"BSAL-6yEmVRg2V68XMz3iFGjpdMsGzt"
   }
+  
 }
 

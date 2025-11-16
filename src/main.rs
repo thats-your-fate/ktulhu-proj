@@ -1,27 +1,27 @@
-mod app_state;
+
 mod config;
 mod messages;
 mod worker;
 mod util;
 mod kafka;
 mod routes;
+mod scraper;
 
 use axum::Router;
 use std::{collections::HashMap, net::SocketAddr, path::Path, sync::Arc};
 use tokio::{
     net::TcpListener,
-    sync::{broadcast, Mutex, RwLock},
+    sync::{broadcast, RwLock},
 };
 use tracing::{info, warn};
 use tower_http::cors::{Any, CorsLayer,AllowOrigin};
 
 use crate::{
-    app_state::{AppState, WorkerState},
     config::AppConfig,
     kafka::messages::{spawn_chat_summary_consumer, MessageEvent},
     util::process_registry::{watch_shutdown, ProcessRegistry},
     worker::manager::{spawn_node_process_from_config, spawn_workers_from_config},
-    
+    scraper::manager::{spawn_scrapers_from_config}
 };
 
 
@@ -47,11 +47,7 @@ async fn main() -> anyhow::Result<()> {
     let registry = Arc::new(ProcessRegistry::default());
 
     //  Spawn Python inference workers
-    let raw_workers = spawn_workers_from_config(&cfg, registry.clone()).await;
-    let worker_states = raw_workers
-        .into_iter()
-        .map(|w| WorkerState { worker: w, busy: false })
-        .collect::<Vec<_>>();
+    let _raw_workers = spawn_workers_from_config(&cfg, registry.clone()).await;
 
     // 🪄 Check Node.js binary
     let node_bin = Path::new("./node-v22-linux-x64/bin/node");
@@ -61,39 +57,35 @@ async fn main() -> anyhow::Result<()> {
         info!(" Found local Node.js binary at {}", node_bin.display());
     }
 
-    // 🚀 Optional Node.js proxy
+    //  Optional Node.js proxy
     spawn_node_process_from_config(&cfg, registry.clone()).await;
 
-    //  App state
-    let (status_tx, _) = broadcast::channel(32);
-    let _app_state = AppState {
-        status_tx,
-        workers: Arc::new(Mutex::new(worker_states)),
-    };
+    spawn_scrapers_from_config(&cfg, registry.clone()).await;
 
     //  Shared in-memory maps
     // Keep all messages per chat in memory
     let (chat_tx, _rx) = broadcast::channel::<MessageEvent>(64);
+
     let messages_map: Arc<RwLock<HashMap<String, Vec<MessageEvent>>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
     //  Start Kafka consumer (store & broadcast events)
-//  Start Kafka consumer (store & broadcast events)
-if let Some(kafka_cfg) = &cfg.kafka {
-    info!(
-        "📡 Starting Kafka consumer at {} (topic: {})",
-        kafka_cfg.brokers, kafka_cfg.topic
-    );
-    spawn_chat_summary_consumer(
-        kafka_cfg.brokers.clone(),
-        kafka_cfg.topic.clone(),
-        chat_tx.clone(),
-        messages_map.clone(),
-    )
-    .await;
-} else {
-    warn!("⚠️ No Kafka configuration found in config.json — skipping Kafka consumer startup.");
-}
+
+    if let Some(kafka_cfg) = &cfg.kafka {
+        info!(
+            "📡 Starting Kafka consumer at {} (topic: {})",
+            kafka_cfg.brokers, kafka_cfg.topic
+        );
+        spawn_chat_summary_consumer(
+            kafka_cfg.brokers.clone(),
+            kafka_cfg.topic.clone(),
+            chat_tx.clone(),
+            messages_map.clone(),
+        )
+        .await;
+    } else {
+        warn!("⚠️ No Kafka configuration found in config.json — skipping Kafka consumer startup.");
+    }
 
 
 let route_state = RouteState {
@@ -107,15 +99,16 @@ let cors = CorsLayer::new()
     .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
     .allow_headers(Any)
     .max_age(Duration::from_secs(3600))
-    .allow_origin(AllowOrigin::predicate(|origin, _req_head| {
-        if let Ok(origin_str) = origin.to_str() {
-            origin_str.ends_with(".ktulhu.com")
-                || origin_str.starts_with("http://localhost")
-                || origin_str.starts_with("http://127.0.0.1")
-        } else {
-            false
-        }
-    }));
+.allow_origin(AllowOrigin::predicate(|origin, _| {
+    if let Ok(o) = origin.to_str() {
+        o == "https://ktulhu.com"
+            || o.ends_with(".ktulhu.com")
+            || o.starts_with("http://localhost")
+            || o.starts_with("http://127.0.0.1")
+    } else {
+        false
+    }
+}));
 
 
 let app = Router::new()
@@ -125,9 +118,9 @@ let app = Router::new()
     .layer(cors);
 
 
-    // 🌍 Serve
+    //  Serve
     let addr: SocketAddr = ([0, 0, 0, 0], 8080).into();
-    info!("🚀 Server running on {}", addr);
+    info!(" Server running on {}", addr);
 
     let listener = TcpListener::bind(addr).await?;
     tokio::select! {
