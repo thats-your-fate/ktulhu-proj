@@ -1,11 +1,18 @@
 import json
-
+from  ..util.safe import escape_curly
 def extract_user_question(prompt):
+    raw = None
+
     if isinstance(prompt, dict):
-        return prompt.get("text", "")
-    if isinstance(prompt, str):
+        raw = prompt.get("text", "")
+
+    elif isinstance(prompt, str):
         try:
-            return json.loads(prompt).get("text", prompt)
-        except:
-            return prompt
-    return str(prompt)
+            raw = json.loads(prompt).get("text", prompt)
+        except Exception:
+            raw = prompt
+
+    else:
+        raw = str(prompt)
+
+    return escape_curly(raw)

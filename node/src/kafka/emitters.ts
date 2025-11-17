@@ -1,5 +1,4 @@
 import WebSocket from "ws";
-import crypto from "crypto";
 import { ensureKafka } from "./client";
 import { log } from "../utils/logger";
 import { ChatMessage } from "../types";
@@ -41,6 +40,17 @@ export async function emitMessageToKafka(
     log.err(`Kafka emit failed (${msg.role}): ${err.message}`);
   }
 }
+
+
+export async function emitStateDelta(delta: any) {
+  const producer = await ensureKafka();
+   producer.send({
+    topic: "conversation_state_delta",
+    messages: [{ value: JSON.stringify(delta) }],
+  });
+}
+
+
 
 export async function emitSummaryBroadcast(
   ws: WebSocket,

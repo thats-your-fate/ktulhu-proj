@@ -19,9 +19,12 @@ use tower_http::cors::{Any, CorsLayer, AllowOrigin};
 use http::Method;
 use std::time::Duration;
 
+use crate::models::state_delta::StateDelta;
+
 use crate::{
     config::AppConfig,
     kafka::messages::{spawn_chat_summary_consumer, MessageEvent},
+    kafka::state_delta::{spawn_state_delta_consumer},
     util::process_registry::{watch_shutdown, ProcessRegistry},
     worker::manager::{spawn_node_process_from_config, spawn_workers_from_config},
     scraper::manager::spawn_scrapers_from_config,
@@ -29,6 +32,7 @@ use crate::{
     routes::{
         chat_summary::router as chat_summary_router,
         chat_thread::router as chat_thread_router,
+                state_delta::router as state_delta_router,
         state::RouteState,
     },
 };
@@ -60,43 +64,52 @@ async fn main() -> anyhow::Result<()> {
     // Scrapers
     spawn_scrapers_from_config(&cfg, registry.clone()).await;
 
-    // 🧩 Shared structures
+
+
+        // Shared broadcast channels
     let (chat_tx, _rx) = broadcast::channel::<MessageEvent>(1024);
+    let (delta_tx, _delta_rx) = broadcast::channel::<StateDelta>(1000);
 
+    // Shared recent message maps
+    let recent_messages: Arc<RwLock<HashMap<String, Vec<MessageEvent>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
 
-let recent_messages: Arc<RwLock<HashMap<String, Vec<MessageEvent>>>> =
-    Arc::new(RwLock::new(HashMap::new()));
+    let recent_state: Arc<RwLock<HashMap<String, Vec<StateDelta>>>> =
+        Arc::new(RwLock::new(HashMap::new()));
 
-
-
-    // 🔥 Initialize RocksDB
+    // RocksDB
     let storage = Arc::new(Storage::open("db/messages_db")?);
-    info!("🗄️ RocksDB initialized at db/messages_db");
 
-    // 🔌 Start Kafka consumer
+    // Kafka consumers
     if let Some(kafka_cfg) = &cfg.kafka {
-        info!(
-            "📡 Starting Kafka consumer at {} (topic: {})",
-            kafka_cfg.brokers, kafka_cfg.topic
-        );
         spawn_chat_summary_consumer(
             kafka_cfg.brokers.clone(),
             kafka_cfg.topic.clone(),
             chat_tx.clone(),
-    recent_messages.clone(),   
-    storage.clone(),      
-        )
-        .await;
-    } else {
-        warn!("⚠️ No Kafka configuration found — skipping Kafka consumer startup.");
+            recent_messages.clone(),
+            storage.clone(),
+        ).await;
+
+        spawn_state_delta_consumer(
+            kafka_cfg.brokers.clone(),
+            "conversation_state_delta".to_string(),
+            delta_tx.clone(),       // ← FIXED
+            recent_state.clone(),   // ← FIXED
+            storage.clone(),
+        ).await;
     }
 
-    // 🌐 Build route state
-let route_state = RouteState {
-    tx: chat_tx.clone(),
-recent_messages: recent_messages.clone(),
-    storage: storage.clone(),
-};
+    // Build RouteState
+    let route_state = RouteState {
+        tx: chat_tx,
+        recent_messages,
+        storage: storage.clone(),
+
+        // NEW
+        delta_tx,
+        recent_state,
+    };
+
 
     // 🪩 CORS
     let cors = CorsLayer::new()
@@ -118,6 +131,7 @@ recent_messages: recent_messages.clone(),
     let app = Router::new()
         .merge(chat_summary_router())
         .merge(chat_thread_router())
+        .merge(state_delta_router())
         .with_state(route_state)
         .layer(cors);
 

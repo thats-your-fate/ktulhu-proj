@@ -1,7 +1,7 @@
 import net from "net";
 import WebSocket from "ws";
 import { log } from "../utils/logger";
-import { emitMessageToKafka, emitSummaryBroadcast } from "../kafka/emitters";
+import { emitMessageToKafka, emitSummaryBroadcast, emitStateDelta } from "../kafka/emitters";
 import { ChatMessage } from "../types";
 import { withIdAndTimestamp } from "../utils/withIdAndTimestamp";
 
@@ -81,6 +81,36 @@ export function handleWorkerStream(
         }
         continue;
       }
+
+
+      // -------------------------
+// NEW: 1.5 STATE DELTA
+// -------------------------
+if (parsed.state_delta) {
+  const delta = {
+    chat_id: chatId,
+    session_id: data.session_id,
+    device_hash: (ws as any).deviceHash || null,
+    state_delta: parsed.state_delta,
+    ts: Date.now(),
+  };
+
+  // Send to Kafka
+  await emitStateDelta(delta);
+
+  // Optional: send to UI
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(
+      JSON.stringify({
+        id: uid,
+        type: "state_delta",
+        state_delta: parsed.state_delta,
+      })
+    );
+  }
+  continue;
+}
+
 
       // -------------------------
       // 3. STREAM TOKENS

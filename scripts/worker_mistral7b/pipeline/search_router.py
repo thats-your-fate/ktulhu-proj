@@ -7,7 +7,7 @@ from ..net.conn import send_system
 from ..brave import run_brave_search
 from ..search_classifier import ask_need_search
 from ..prompts import build_reasoning_prompt
-
+from ..util.safe import escape_curly
 def rewrite_search_query(question, tokenizer, model, device):
     prompt = f"""
 Rewrite the following user question into a concise search query...
@@ -19,7 +19,7 @@ Search query:
 def route_request(prompt, tokenizer, model, device, conn, uid, chat_id):
     send_system(conn, uid, chat_id, "Extracting user question…")
 
-    question = extract_user_question(prompt)
+    question = extract_user_question(prompt) 
 
     # Summary
     summary = fetch_summary(chat_id) or make_summary_with_model(
