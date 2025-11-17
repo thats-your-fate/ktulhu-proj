@@ -7,23 +7,29 @@ use rdkafka::{
 };
 use serde::{Deserialize, Serialize};
 use tracing::{info, error};
+use crate::Storage;
+use crate::storage::MessageStore;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageEvent {
+    pub id: String, 
     pub role: String,
     pub chat_id: String,
     pub session_id: Option<String>,
+    pub user_id: Option<String>,    
     pub device_hash: Option<String>,
     pub text: Option<String>,
     pub summary: Option<String>,
-    pub ts: Option<i64>,
+    pub ts: i64,      
 }
+
 
 pub async fn spawn_chat_summary_consumer(
     brokers: String,
     topic: String,
     tx: broadcast::Sender<MessageEvent>,
-    messages: Arc<RwLock<HashMap<String, Vec<MessageEvent>>>>,
+    recent_messages: Arc<RwLock<HashMap<String, Vec<MessageEvent>>>>,
+        storage: Arc<Storage>,   
 ) {
     tokio::spawn(async move {
         let consumer: StreamConsumer = ClientConfig::new()
@@ -70,12 +76,39 @@ pub async fn spawn_chat_summary_consumer(
                     }
 
                     // Store in memory map
+{
+    let mut map = recent_messages.write().await;
+    let entry = map.entry(event.chat_id.clone()).or_default();
+
+    entry.push(event.clone());
+
+    // keep only last 50
+    if entry.len() > 50 {
+        entry.remove(0);
+    }
+}
+
+
                     {
-                        let mut map = messages.write().await;
-                        map.entry(event.chat_id.clone())
-                            .or_default()
-                            .push(event.clone());
-                    }
+    // Convert event to model::Message
+    let msg = crate::models::Message {
+        id: event.id.clone(),
+        chat_id: event.chat_id.clone(),
+        session_id: event.session_id.clone(),
+        device_hash: event.device_hash.clone(),
+        user_id: None,       
+        role: event.role.clone(),
+        text: event.text.clone(),
+        summary: event.summary.clone(),
+        ts: event.ts,
+    };
+
+    // Persist to RocksDB
+    if let Err(err) = MessageStore::save(&storage, &msg) {
+        error!("❌ Failed to persist message {}: {}", msg.id, err);
+    }
+}
+
 
                     // Only summaries broadcast to SSE/WS listeners
                     if event.role == "summary" {

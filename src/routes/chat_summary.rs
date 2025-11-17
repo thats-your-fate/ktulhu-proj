@@ -10,6 +10,8 @@ use axum::{
 use serde_json::{json, Value};
 use tracing::info;
 
+use crate::storage::MessageStore;
+
 use crate::routes::state::RouteState;
 
 /// 🧩 Utility: safely unwrap a JSON-encoded string if needed
@@ -39,37 +41,34 @@ pub fn router() -> Router<RouteState> {
         .route("/chat-summary/ws", get(ws_handler))
 }
 
-/// 🧠 Returns the most recent `summary` per chat_id
+///  Returns the most recent `summary` per chat_id
 async fn list_last(State(state): State<RouteState>) -> impl IntoResponse {
-    let data = state.messages.read().await;
+    let mut out = Vec::new();
 
-    let mut chats = Vec::new();
+    let threads = MessageStore::list_chat_ids(&state.storage)
+        .unwrap_or_default();
 
-    for (chat_id, msgs) in data.iter() {
-        if let Some(last_summary) = msgs.iter().rev().find(|m| m.role == "summary" && m.summary.is_some()) {
-            let clean_summary = normalize_text(&last_summary.summary);
-            let clean_text = normalize_text(&last_summary.text);
-
-            chats.push(json!({
+    for chat_id in threads {
+        if let Ok(Some(msg)) = MessageStore::load_last_summary(&state.storage, &chat_id) {
+            out.push(json!({
                 "chat_id": chat_id,
-                "summary": clean_summary,
-                "text": clean_text,
-                "ts": last_summary.ts
+                "summary": msg.summary,
+                "ts": msg.ts
             }));
         }
     }
 
-    Json(json!({ "chats": chats }))
+    Json(json!({ "chats": out }))
 }
 
-/// 🌐 WebSocket: stream new summary messages in real time
+///  WebSocket: stream new summary messages in real time
 async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<RouteState>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |mut socket: WebSocket| async move {
         let mut rx = state.tx.subscribe();
-        info!("🌐 Connected to /chat-summary/ws");
+        info!(" Connected to /chat-summary/ws");
 
         while let Ok(event) = rx.recv().await {
             if event.role != "summary" {
@@ -78,12 +77,10 @@ async fn ws_handler(
 
             // Clean values before sending
             let clean_summary = normalize_text(&event.summary);
-            let clean_text = normalize_text(&event.text);
 
             let msg = json!({
                 "chat_id": event.chat_id,
                 "summary": clean_summary,
-                "text": clean_text,
                 "ts": event.ts
             });
 

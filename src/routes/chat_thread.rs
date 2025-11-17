@@ -7,46 +7,67 @@ use axum::{
 use serde_json::json;
 
 use crate::routes::state::RouteState;
+use crate::storage::MessageStore;
 
-/// Build router for chat thread messages
 pub fn router() -> Router<RouteState> {
     Router::new()
-        // Example: GET /chat-thread/952df5b9-1903-4f2a-9cb0-bfd0be7a2f3d
         .route("/chat-thread/:chat_id", get(get_thread))
 }
 
-/// 🧩 Return all messages for a given chat_id (chronological order)
 async fn get_thread(
     Path(chat_id): Path<String>,
     State(state): State<RouteState>,
-) -> impl IntoResponse {
-    let data = state.messages.read().await;
+) -> impl IntoResponse 
+{
+    // 1. Try sliding-window in-memory messages first
+    if let Some(recent) = state.recent_messages.read().await.get(&chat_id) {
+        if !recent.is_empty() {
+            let mut msgs = recent.clone();
+            msgs.sort_by_key(|m| m.ts);
 
-    if let Some(messages) = data.get(&chat_id) {
-        // Sort messages chronologically
-        let mut sorted = messages.clone();
-        sorted.sort_by_key(|m| m.ts.unwrap_or_default());
-
-        let msgs: Vec<_> = sorted
-            .iter()
-            .map(|m| {
+            let out: Vec<_> = msgs.iter().map(|m| {
                 json!({
+                    "id": m.id,
                     "role": m.role,
                     "text": m.text,
                     "summary": m.summary,
                     "ts": m.ts
                 })
-            })
-            .collect();
+            }).collect();
 
-        Json(json!({
-            "chat_id": chat_id,
-            "messages": msgs
-        }))
-    } else {
-        Json(json!({
-            "chat_id": chat_id,
-            "messages": []
-        }))
+            return Json(json!({
+                "chat_id": chat_id,
+                "messages": out,
+                "source": "memory"
+            }));
+        }
     }
+
+    // 2. Fallback — full history from RocksDB
+    let messages = match MessageStore::load_thread(&state.storage, &chat_id) {
+        Ok(v) => v,
+        Err(e) => {
+            return Json(json!({
+                "chat_id": chat_id,
+                "messages": [],
+                "error": e.to_string()
+            }));
+        }
+    };
+
+    let out: Vec<_> = messages.iter().map(|m| {
+        json!({
+            "id": m.id,
+            "role": m.role,
+            "text": m.text,
+            "summary": m.summary,
+            "ts": m.ts
+        })
+    }).collect();
+
+    Json(json!({
+        "chat_id": chat_id,
+        "messages": out,
+        "source": "db"
+    }))
 }

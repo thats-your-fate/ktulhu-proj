@@ -1,12 +1,12 @@
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{broadcast, RwLock};
-use crate::kafka::messages::MessageEvent;
 
-/// Unified shared state for all routes
+use crate::kafka::messages::MessageEvent;
+use crate::storage::Storage;
+
 #[derive(Clone)]
 pub struct RouteState {
-    /// Broadcast channel for live updates
-    pub tx: broadcast::Sender<MessageEvent>,
-    /// In-memory map: chat_id → Vec<MessageEvent>
-    pub messages: Arc<RwLock<HashMap<String, Vec<MessageEvent>>>>,
+    pub storage: Arc<Storage>, // RocksDB
+    pub tx: broadcast::Sender<MessageEvent>, // WS
+    pub recent_messages: Arc<RwLock<HashMap<String, Vec<MessageEvent>>>>, // sliding window
 }

@@ -75,3 +75,7 @@ desktop.ini
 # ==========================
 /tmp/infer_*.sock
 *.pid
+
+
+db/messages_db/*
+!db/.gitkeep

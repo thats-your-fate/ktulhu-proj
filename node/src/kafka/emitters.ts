@@ -1,11 +1,14 @@
 import WebSocket from "ws";
+import crypto from "crypto";
 import { ensureKafka } from "./client";
 import { log } from "../utils/logger";
 import { ChatMessage } from "../types";
 
+import { withIdAndTimestamp } from "../utils/withIdAndTimestamp";
+
+
 /** Safely prepare a message for Kafka */
 function safeSerializeMessage(msg: ChatMessage): string {
-  // just remove null bytes; let JSON.stringify handle escaping
   const safeMsg = { ...msg };
   if (typeof safeMsg.text === "string") {
     safeMsg.text = safeMsg.text.replace(/\u0000/g, "");
@@ -46,21 +49,27 @@ export async function emitSummaryBroadcast(
   chatId: string,
   deviceClients: Map<string, Set<WebSocket>>
 ) {
-  const event: ChatMessage = {
+  // Add UUID + timestamp to summary event
+  const event: ChatMessage = withIdAndTimestamp({
     role: "summary",
     chat_id: chatId,
     session_id: data.session_id,
     device_hash: (ws as any).deviceHash || null,
     summary,
-    ts: Date.now(),
-  };
+  });
 
   await emitMessageToKafka(event);
 
   const device = (ws as any).deviceHash;
   const payload = JSON.stringify({
     type: "chat_summary",
-    data: { chat_id: chatId, summary, ts: Date.now(), source: "inference" },
+    data: {
+      id: event.id,
+      chat_id: chatId,
+      summary,
+      ts: event.ts,
+      source: "inference",
+    },
   });
 
   for (const client of deviceClients.get(device) ?? []) {
