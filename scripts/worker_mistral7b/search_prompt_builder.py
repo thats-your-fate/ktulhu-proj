@@ -1,36 +1,59 @@
-
 # search_prompt_builder.py
 
-def build_search_augmented_prompt(original: str, search_json: dict) -> str:
+def build_search_augmented_prompt(
+    raw_question: str,
+    rewritten_query: str,
+    search_json: dict
+) -> str:
     """
-    Build final prompt including scraped web results.
+    Build the section of the prompt that includes:
+    - the original user question
+    - the rewritten search query
+    - the extracted external information
     """
-    results = search_json.get("results", [])
 
-    parts = ["Here is external information found via web search:\n"]
+    parts = []
+    parts.append(f"User question: {raw_question}\n")
+    parts.append(f"Search query used: {rewritten_query}\n")
+    parts.append("Relevant external information from web search:\n")
 
+    # ---- Brave search failure case ----
+    if not search_json or search_json.get("error"):
+        parts.append(f"(Search error: {search_json.get('error')})")
+        parts.append("No external sources available.\n")
+        parts.append("Answer based on general knowledge.")
+        return "\n".join(parts)
+
+    results = search_json.get("results") or []
+
+    # ---- No results case ----
+    if not results:
+        parts.append("(No search results found.)")
+        parts.append("Answer based on general knowledge.\n")
+        return "\n".join(parts)
+
+    # ---- Normal case: add extracted results ----
     for r in results:
-        title = r.get("title", "")
-        url = r.get("url", "")
-        headline = r.get("headline", "")
-        paras = r.get("paragraphs", [])
+        title = r.get("title") or r.get("headline") or "Untitled"
+        url = r.get("url") or ""
+        paragraphs = r.get("paragraphs") or []
+        snippet = r.get("snippet") or ""
 
-        parts.append(f"Source: {title}\nURL: {url}\nHeadline: {headline}")
-        for p in paras[:3]:
-            parts.append(f"Paragraph: {p}")
-        parts.append("")
+        parts.append(f"Source: {title}")
+        parts.append(f"URL: {url}")
 
-    search_block = "\n".join(parts)
+        if paragraphs:
+            for p in paragraphs[:3]:
+                parts.append(f"Paragraph: {p}")
+        elif snippet:
+            parts.append(f"Paragraph: {snippet}")
+        else:
+            parts.append("Paragraph: (no text available)")
 
-    final = f"""
-Use the external information below to answer the user accurately.
+        parts.append("")  # blank line
 
-{search_block}
+    parts.append(
+        "Use the information above to answer the user's question accurately."
+    )
 
-User question: {original}
-
-Answer clearly and concisely:
-""".strip()
-
-    return final
-
+    return "\n".join(parts)
