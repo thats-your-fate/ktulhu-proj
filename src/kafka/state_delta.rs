@@ -1,5 +1,5 @@
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock};
 use rdkafka::{
     consumer::{Consumer, StreamConsumer},
     ClientConfig, Message,
@@ -16,7 +16,6 @@ use crate::storage::StateStore;
 pub async fn spawn_state_delta_consumer(
     brokers: String,
     topic: String,
-    tx: broadcast::Sender<StateDelta>,
     recent: Arc<RwLock<HashMap<String, Vec<StateDelta>>>>,
     storage: Arc<Storage>,
 ) {
@@ -65,8 +64,6 @@ pub async fn spawn_state_delta_consumer(
                         error!("❌ Failed to save delta: {e}");
                     }
 
-                    // Broadcast to WS listeners
-                    let _ = tx.send(delta.clone());
                 }
 
                 Err(e) => error!("Kafka error: {e}"),

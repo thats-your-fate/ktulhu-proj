@@ -19,38 +19,38 @@ use tower_http::cors::{Any, CorsLayer, AllowOrigin};
 use http::Method;
 use std::time::Duration;
 
+use crate::config::AppConfig;
+use crate::kafka::messages::{spawn_chat_summary_consumer, MessageEvent};
+use crate::kafka::state_delta::spawn_state_delta_consumer;
+use crate::util::process_registry::{watch_shutdown, ProcessRegistry};
+use crate::worker::manager::{spawn_node_process_from_config, spawn_workers_from_config};
+use crate::scraper::manager::spawn_scrapers_from_config;
+use crate::storage::Storage;
 use crate::models::state_delta::StateDelta;
 
-use crate::{
-    config::AppConfig,
-    kafka::messages::{spawn_chat_summary_consumer, MessageEvent},
-    kafka::state_delta::{spawn_state_delta_consumer},
-    util::process_registry::{watch_shutdown, ProcessRegistry},
-    worker::manager::{spawn_node_process_from_config, spawn_workers_from_config},
-    scraper::manager::spawn_scrapers_from_config,
-    storage::{Storage},
-    routes::{
-        chat_summary::router as chat_summary_router,
-        chat_thread::router as chat_thread_router,
-                state_delta::router as state_delta_router,
-        state::RouteState,
-    },
+// 🚀 ROUTERS
+use crate::routes::{
+    chat_summary::router as chat_summary_router,
+    chat_thread::router as chat_thread_router,
+    state_delta::router as state_delta_router,
+    messages::router as messages_router, // << NEW
+    state::RouteState,
 };
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    // 🔧 Load config
+    // Load config
     let cfg = AppConfig::load()?;
     info!("Loaded {} worker configs", cfg.workers.len());
 
     let registry = Arc::new(ProcessRegistry::default());
 
-    //  Spawn Python inference workers
+    // Spawn Python workers
     let _raw_workers = spawn_workers_from_config(&cfg, registry.clone()).await;
 
-    // 🪄 Check Node.js binary
+    // Check Node.js binary
     let node_bin = Path::new("./node-v22-linux-x64/bin/node");
     if !node_bin.exists() {
         warn!("⚠️ Node.js v22 binary not found. Run ./init_node.sh");
@@ -58,62 +58,53 @@ async fn main() -> anyhow::Result<()> {
         info!("Found Node binary at {}", node_bin.display());
     }
 
-    //  Optional Node.js proxy
     spawn_node_process_from_config(&cfg, registry.clone()).await;
-
-    // Scrapers
     spawn_scrapers_from_config(&cfg, registry.clone()).await;
 
-
-
-        // Shared broadcast channels
+    // Shared broadcast channel
     let (chat_tx, _rx) = broadcast::channel::<MessageEvent>(1024);
-    let (delta_tx, _delta_rx) = broadcast::channel::<StateDelta>(1000);
 
-    // Shared recent message maps
+    // Sliding window messages
     let recent_messages: Arc<RwLock<HashMap<String, Vec<MessageEvent>>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
     let recent_state: Arc<RwLock<HashMap<String, Vec<StateDelta>>>> =
-        Arc::new(RwLock::new(HashMap::new()));
+    Arc::new(RwLock::new(HashMap::new()));
 
     // RocksDB
     let storage = Arc::new(Storage::open("db/messages_db")?);
 
-    // Kafka consumers
-    if let Some(kafka_cfg) = &cfg.kafka {
-        spawn_chat_summary_consumer(
-            kafka_cfg.brokers.clone(),
-            kafka_cfg.topic.clone(),
-            chat_tx.clone(),
-            recent_messages.clone(),
-            storage.clone(),
-        ).await;
+// Kafka consumers
+if let Some(kafka_cfg) = &cfg.kafka {
+    // 1) Chat summary / messages consumer
+    spawn_chat_summary_consumer(
+        kafka_cfg.brokers.clone(),
+        kafka_cfg.topic.clone(),
+        chat_tx.clone(),
+        recent_messages.clone(),
+        storage.clone(),
+    ).await;
 
-        spawn_state_delta_consumer(
-            kafka_cfg.brokers.clone(),
-            "conversation_state_delta".to_string(),
-            delta_tx.clone(),       // ← FIXED
-            recent_state.clone(),   // ← FIXED
-            storage.clone(),
-        ).await;
-    }
+    // 2) State delta consumer (conversation memory)
+    spawn_state_delta_consumer(
+        kafka_cfg.brokers.clone(),
+        "conversation_state_delta".to_string(), // or kafka_cfg.state_delta_topic if you have it
+        recent_state.clone(),
+        storage.clone(),
+    ).await;
+}
 
-    // Build RouteState
+    // Build clean RouteState
     let route_state = RouteState {
         tx: chat_tx,
         recent_messages,
-        storage: storage.clone(),
-
-        // NEW
-        delta_tx,
         recent_state,
+        storage: storage.clone(),
     };
 
-
-    // 🪩 CORS
+    // CORS
     let cors = CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS, Method::DELETE])
         .allow_headers(Any)
         .max_age(Duration::from_secs(3600))
         .allow_origin(AllowOrigin::predicate(|origin, _| {
@@ -127,15 +118,16 @@ async fn main() -> anyhow::Result<()> {
             }
         }));
 
-    // 🧠 Build Axum app
+    // Build app with routers
     let app = Router::new()
         .merge(chat_summary_router())
         .merge(chat_thread_router())
         .merge(state_delta_router())
+        .merge(messages_router())          // << NEW ROUTER
         .with_state(route_state)
         .layer(cors);
 
-    // 🚀 Serve
+    // Serve
     let addr: SocketAddr = ([0, 0, 0, 0], 8080).into();
     info!("🚀 Server running on {}", addr);
 

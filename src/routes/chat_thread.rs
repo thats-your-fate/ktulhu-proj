@@ -12,6 +12,7 @@ use crate::storage::MessageStore;
 pub fn router() -> Router<RouteState> {
     Router::new()
         .route("/chat-thread/:chat_id", get(get_thread))
+        .route("/chat-thread/:chat_id", axum::routing::delete(delete_thread))
 }
 
 async fn get_thread(
@@ -71,3 +72,39 @@ async fn get_thread(
         "source": "db"
     }))
 }
+
+
+async fn delete_thread(
+    Path(chat_id): Path<String>,
+    State(state): State<RouteState>,
+) -> impl IntoResponse 
+{
+    // 1. Delete from in-memory sliding window
+    {
+        let mut lock = state.recent_messages.write().await;
+        lock.remove(&chat_id);
+    }
+
+    // 2. Delete from RocksDB (pass full storage)
+    match MessageStore::delete_thread(&state.storage, &chat_id) {
+        Ok(()) => {
+            println!("🗑️ Deleted thread {chat_id} from memory + DB");
+            Json(json!({
+                "chat_id": chat_id,
+                "deleted": true,
+                "source": ["memory", "db"]
+            }))
+        }
+
+        Err(e) => {
+            eprintln!("❌ Failed to delete thread {chat_id}: {}", e);
+            Json(json!({
+                "chat_id": chat_id,
+                "deleted": false,
+                "error": e.to_string()
+            }))
+        }
+    }
+}
+
+

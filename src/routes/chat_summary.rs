@@ -7,6 +7,7 @@ use axum::{
     routing::get,
     Router,
 };
+use futures_util::{StreamExt, SinkExt};
 use serde_json::{json, Value};
 use tracing::info;
 
@@ -66,30 +67,69 @@ async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<RouteState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |mut socket: WebSocket| async move {
+    ws.on_upgrade(move |socket: WebSocket| async move {
+        // Split so we can read + write independently
+        let (mut ws_tx, mut ws_rx) = socket.split();
         let mut rx = state.tx.subscribe();
+
         info!(" Connected to /chat-summary/ws");
 
-        while let Ok(event) = rx.recv().await {
-            if event.role != "summary" {
-                continue;
-            }
+        loop {
+            tokio::select! {
+                // 🔹 Detect client disconnects / incoming messages
+                incoming = ws_rx.next() => {
+                    match incoming {
+                        Some(Ok(Message::Close(_))) | None => {
+                            info!("❌ WS client disconnected");
+                            break;
+                        }
+                        Some(Ok(_)) => {
+                            // ignore any other client messages
+                        }
+                        Some(Err(e)) => {
+                            info!("⚠️ WS receive error: {e}");
+                            break;
+                        }
+                    }
+                }
 
-            // Clean values before sending
-            let clean_summary = normalize_text(&event.summary);
+                // 🔹 Read from broadcast channel
+                result = rx.recv() => {
+                    match result {
+                        Ok(event) => {
+                            if event.role != "summary" {
+                                continue;
+                            }
 
-            let msg = json!({
-                "chat_id": event.chat_id,
-                "summary": clean_summary,
-                "ts": event.ts
-            });
+                            let clean_summary = normalize_text(&event.summary);
 
-            if let Err(e) = socket.send(Message::Text(msg.to_string())).await {
-                info!("⚠️ WS send error: {e}");
-                break;
+                            let msg = json!({
+                                "chat_id": event.chat_id,
+                                "summary": clean_summary,
+                                "ts": event.ts
+                            });
+
+                            if ws_tx.send(Message::Text(msg.to_string())).await.is_err() {
+                                info!("⚠️ WS send failed, closing connection");
+                                break;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            info!("🔚 broadcast channel closed, stopping WS");
+                            break;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            info!("⚠️ WS lagged, skipped {skipped} messages");
+                            // you can `continue` here – we just miss some old summaries
+                        }
+                    }
+                }
             }
         }
 
-        info!("❌ /chat-summary/ws disconnected");
+        // Try to close gracefully
+        let _ = ws_tx.send(Message::Close(None)).await;
+        info!("🔚 /chat-summary/ws closed gracefully");
     })
 }
+

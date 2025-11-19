@@ -96,4 +96,62 @@ impl MessageStore {
 
         Ok(last)
     }
+
+pub fn delete_thread(storage: &Storage, chat_id: &str) -> anyhow::Result<()> {
+    let db = &storage.db;
+    let mut batch = rocksdb::WriteBatch::default();
+
+    // 1. Delete messages from primary CF
+    let iter = db.iterator_cf(&storage.cf_messages, rocksdb::IteratorMode::Start);
+
+    for item in iter {
+        let (key, raw) = item?;
+        let msg: Message = serde_json::from_slice(&raw)?;
+
+        if msg.chat_id == chat_id {
+            batch.delete_cf(&storage.cf_messages, key);
+        }
+    }
+
+    // 2. Delete time index
+    let iter2 = db.iterator_cf(&storage.cf_messages_by_time, rocksdb::IteratorMode::Start);
+
+    for item in iter2 {
+        let (tkey, msg_id_bytes) = item?;
+        let id = String::from_utf8(msg_id_bytes.to_vec())?;
+
+        let mkey = format!("msg:{id}");
+
+        if let Some(raw) = db.get_cf(&storage.cf_messages, mkey.as_bytes())? {
+            let msg: Message = serde_json::from_slice(&raw)?;
+
+            if msg.chat_id == chat_id {
+                batch.delete_cf(&storage.cf_messages_by_time, tkey);
+            }
+        }
+    }
+
+    db.write(batch)?;
+    Ok(())
+}
+
+
+    pub fn load_all_messages(storage: &Storage) -> anyhow::Result<Vec<Message>> {
+        let mut out = Vec::new();
+
+        let iter = storage.db.iterator_cf(
+            &storage.cf_messages,
+            rocksdb::IteratorMode::Start
+        );
+
+        for item in iter {
+            let (_, raw) = item?;
+            let msg: Message = serde_json::from_slice(&raw)?;
+            out.push(msg);
+        }
+
+        Ok(out)
+    }
+
+
 }

@@ -1,11 +1,11 @@
 use axum::{
-    extract::{ws::{WebSocketUpgrade, WebSocket, Message}, State, Path},
+    extract::{State, Path},
     response::{IntoResponse, Json},
     routing::get,
     Router,
 };
 use serde_json::json;
-use tracing::info;
+
 
 use crate::routes::state::RouteState;
 use crate::storage::StateStore;
@@ -13,7 +13,6 @@ use crate::storage::StateStore;
 pub fn router() -> Router<RouteState> {
     Router::new()
         .route("/state-delta/last", get(list_last))
-        .route("/state-delta/ws", get(ws_handler))
         .route("/state-delta/history/:chat_id", get(history))
 }
 
@@ -36,27 +35,6 @@ async fn list_last(State(state): State<RouteState>) -> impl IntoResponse {
     Json(json!({ "chats": out }))
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<RouteState>) -> impl IntoResponse {
-    ws.on_upgrade(move |mut socket: WebSocket| async move {
-        let mut rx = state.delta_tx.subscribe();
-        info!(" Connected to /state-delta/ws");
-
-        while let Ok(delta) = rx.recv().await {
-            let msg = json!({
-                "chat_id": delta.chat_id,
-                "state_delta": delta.state_delta,
-                "ts": delta.ts
-            });
-
-            if let Err(e) = socket.send(Message::Text(msg.to_string())).await {
-                info!("⚠️ WS send error: {e}");
-                break;
-            }
-        }
-
-        info!("❌ /state-delta/ws disconnected");
-    })
-}
 
 pub async fn history(
     State(state): State<RouteState>,
