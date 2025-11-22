@@ -3,33 +3,6 @@ import json
 
 from worker_mistral7b.search_prompt_builder import build_search_augmented_prompt
 
-def build_final_prompt_with_search(raw_question, rewritten, search_json):
-    return f"""
-SYSTEM:
-        "You are an advanced AI assistant.\n"
-        "Your job is to provide clear, comprehensive, and well-structured answers.\n"
-        "Use all available external information.\n"
-        "If search results are provided, analyze them and create a merged, factual summary.\n"
-        "Present your answer with clear sections, bullets, and hierarchy.\n"
-        "Do NOT be overly brief — provide meaningful detail when relevant.\n"
-        "Avoid hallucinations. If data is missing or uncertain, acknowledge it.\n"
-        "Always include a final section titled 'Sources' listing all used sources.\n"
-        "For each source: provide title + URL (only if present in search results).\n"
-        "Do not invent sources or URLs.\n"
-        "If no valid sources exist, write: 'No external sources available.'\n\n"
-
-USER:
-{build_search_augmented_prompt(raw_question, rewritten, search_json)}
-
-ASSISTANT:
-1. **Summary**
-2. **Detailed Explanation**
-3. **Key Facts**
-4. **Sources**
-""".strip()
-
-
-
 
 def normalize_prompt(raw: str) -> str:
     text = raw.strip()
@@ -52,6 +25,7 @@ def build_reasoning_prompt(user_text: str) -> str:
 
 def rewrite_if_meta_response(text: str) -> str:
     lowered = text.lower().strip()
+
     if lowered.startswith(("the user is", "the user wants", "the user has", "the user seeks")):
         text = re.sub(r"(?i)^the user is (asking|inquiring|seeking|wondering)", "You're", text)
         text = re.sub(r"(?i)^the user wants to know", "You’d like to know", text)
@@ -63,74 +37,98 @@ def rewrite_if_meta_response(text: str) -> str:
 
 # worker_mistral7b/prompts/memory_prompt.py
 
-
-
-def sanitize_memory(value):
-    """
-    Converts Python structures into safe JSON strings,
-    escaping curly braces so f-strings can't break.
-    """
-    text = json.dumps(value, indent=2, ensure_ascii=False)
-    return text.replace("{", "{{").replace("}", "}}")
-
+import json
 
 def build_prompt_with_memory(question, state, search_block=None):
-    intents = state.get("intents", [])
-    facts = state.get("facts", [])
-    summary = state.get("summary") or "None"
+    intents = state.get("intents") or []
+    facts = state.get("facts") or []
+    summary = state.get("summary") or "No summary available."
 
-    safe_intents = sanitize_memory(intents)
-    safe_facts = sanitize_memory(facts)
-    safe_summary = sanitize_memory(summary)
+    memory_json = json.dumps({
+        "intents": intents,
+        "facts": facts,
+        "summary": summary
+    }, indent=2, ensure_ascii=False)
 
-    memory_block = f"""
-=== MEMORY START ===
-Known user intents:
-{safe_intents}
+    external_json = (
+        json.dumps(search_block, indent=2, ensure_ascii=False)
+        if search_block else "None"
+    )
 
-Known structured facts:
-{safe_facts}
-
-Conversation summary:
-{safe_summary}
-=== MEMORY END ===
-""".strip()
-
-    # Optional search augmentation
-    search_text = ""
-    if search_block:
-        # 🔥 FIX: Ensure dictionary → JSON string, then escape braces
-        if not isinstance(search_block, str):
-            search_block = json.dumps(search_block, ensure_ascii=False, indent=2)
-
-        safe_search = search_block.replace("{", "{{").replace("}", "}}")
-
-        search_text = f"""
-=== EXTERNAL KNOWLEDGE ===
-{safe_search}
-=== END EXTERNAL ===
-""".rstrip()
-
-    # FINAL PROMPT
     return f"""
-SYSTEM:
-You are an intelligent AI assistant with persistent memory.
-Use the memory block to stay consistent with the user's long-term preferences
-and avoid contradictions.
+## SYSTEM
+You are an intelligent assistant. You may use the provided memory and optional external knowledge to give a helpful, well-structured answer.
 
-{memory_block}
+Always respond directly to the user in first person. 
+Do not describe the user’s actions or thoughts. 
+Your output should be in **Markdown format**.  
+You may structure your answer as you see fit (headings, lists, tables, summaries), as long as it is clear and helpful.
 
-USER QUESTION:
-{question}
+---
 
-{search_text}
+### Memory (for your reasoning only — DO NOT include this section in the output)
+{memory_json}
 
-ASSISTANT:
-Provide the best possible answer by combining:
-1. The user's past intents and known facts (memory)
-2. The current question
-3. External search results (if present)
+### External Knowledge (optional — DO NOT include this section in the output)
+{external_json}
 
-Be direct, helpful, and consistent.
+---
+
+## USER QUESTION
+"{question}"
+
+---
+
+## ASSISTANT
+Please answer in **Markdown**, using any structure you consider useful, include links if ### External Knowledge is present.  
+
+If necessary, make your answer broad and comprehensive, do not invent facts
+
+Focus on clarity, correctness, and helpfulness.
 """.strip()
 
+
+def build_narrow_with_memory(question, state, search_block=None):
+    intents = state.get("intents") or []
+    facts = state.get("facts") or []
+    summary = state.get("summary") or "No summary available."
+
+    memory_json = json.dumps({
+        "intents": intents,
+        "facts": facts,
+        "summary": summary
+    }, indent=2, ensure_ascii=False)
+
+    external_json = (
+        json.dumps(search_block, indent=2, ensure_ascii=False)
+        if search_block else "None"
+    )
+
+    return f"""
+## SYSTEM
+Always respond directly to the user in first person. 
+answer clearly and conversationally.
+Do not describe the users actions or thoughts. 
+You may use the provided memory and optional external knowledge to give a helpful answer.
+
+---
+
+### Memory (for your reasoning only — DO NOT include this section in the output)
+{memory_json}
+
+### External Knowledge (optional — DO NOT include this section in the output)
+{external_json}
+
+---
+
+## USER QUESTION
+"{question}"
+
+---
+
+## ASSISTANT
+
+Make you answer brief.
+
+Focus on clarity, correctness, and helpfulness.
+""".strip()

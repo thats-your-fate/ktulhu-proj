@@ -7,6 +7,8 @@ mod routes;
 mod scraper;
 mod storage;
 mod models;
+mod history_worker;
+
 
 use axum::Router;
 use std::{collections::HashMap, net::SocketAddr, path::Path, sync::Arc};
@@ -20,13 +22,16 @@ use http::Method;
 use std::time::Duration;
 
 use crate::config::AppConfig;
-use crate::kafka::messages::{spawn_chat_summary_consumer, MessageEvent};
-use crate::kafka::state_delta::spawn_state_delta_consumer;
+use crate::kafka::messages::{spawn_chat_summary_consumer, spawn_user_event_consumer, MessageEvent};
 use crate::util::process_registry::{watch_shutdown, ProcessRegistry};
 use crate::worker::manager::{spawn_node_process_from_config, spawn_workers_from_config};
 use crate::scraper::manager::spawn_scrapers_from_config;
 use crate::storage::Storage;
 use crate::models::state_delta::StateDelta;
+use crate::models::Message;
+
+
+use crate::history_worker::HistoryWorker;
 
 // 🚀 ROUTERS
 use crate::routes::{
@@ -37,9 +42,15 @@ use crate::routes::{
     state::RouteState,
 };
 
+
+
+
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
+
+
 
     // Load config
     let cfg = AppConfig::load()?;
@@ -62,45 +73,78 @@ async fn main() -> anyhow::Result<()> {
     spawn_scrapers_from_config(&cfg, registry.clone()).await;
 
     // Shared broadcast channel
-    let (chat_tx, _rx) = broadcast::channel::<MessageEvent>(1024);
+    let (_chat_tx, _rx) = broadcast::channel::<MessageEvent>(1024);
 
     // Sliding window messages
     let recent_messages: Arc<RwLock<HashMap<String, Vec<MessageEvent>>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
-    let recent_state: Arc<RwLock<HashMap<String, Vec<StateDelta>>>> =
+let recent_state: Arc<RwLock<HashMap<String, Vec<StateDelta>>>> =
     Arc::new(RwLock::new(HashMap::new()));
 
+    let _recent_history: Arc<RwLock<HashMap<String, Vec<Message>>>> =
+    Arc::new(RwLock::new(HashMap::new()));
+    
     // RocksDB
     let storage = Arc::new(Storage::open("db/messages_db")?);
 
+    let (chat_event_tx, _chat_event_rx) =
+    broadcast::channel::<MessageEvent>(2048);
+
+        // Broadcast channel dedicated for HistoryWorker
+let (tx_user, _) = broadcast::channel::<MessageEvent>(256);
+
+
+
 // Kafka consumers
 if let Some(kafka_cfg) = &cfg.kafka {
-    // 1) Chat summary / messages consumer
+    // 1. Chat messages → WS, HistoryWorker, UI
     spawn_chat_summary_consumer(
         kafka_cfg.brokers.clone(),
         kafka_cfg.topic.clone(),
-        chat_tx.clone(),
+        chat_event_tx.clone(),    // <-- IMPORTANT
         recent_messages.clone(),
         storage.clone(),
     ).await;
 
-    // 2) State delta consumer (conversation memory)
-    spawn_state_delta_consumer(
-        kafka_cfg.brokers.clone(),
-        "conversation_state_delta".to_string(), // or kafka_cfg.state_delta_topic if you have it
-        recent_state.clone(),
-        storage.clone(),
-    ).await;
+
+// Spawn user-only consumer
+spawn_user_event_consumer(
+    kafka_cfg.brokers.clone(),
+    kafka_cfg.topic.clone(),
+    tx_user.clone(),
+    storage.clone(),
+).await;
+
 }
 
     // Build clean RouteState
-    let route_state = RouteState {
-        tx: chat_tx,
-        recent_messages,
-        recent_state,
-        storage: storage.clone(),
-    };
+let route_state = RouteState {
+    tx: chat_event_tx.clone(),       // <-- fixed
+    recent_messages: recent_messages.clone(),
+    recent_state: recent_state.clone(),
+    storage: storage.clone(),
+};
+
+
+
+
+// Start HistoryWorker
+let worker = Arc::new(HistoryWorker::new(
+    storage.clone(),
+    recent_state.clone(),
+));
+
+tokio::spawn({
+    let worker = worker.clone();
+    let rx = tx_user.subscribe();
+    async move {
+        worker.run(rx).await;
+    }
+});
+
+
+
 
     // CORS
     let cors = CorsLayer::new()

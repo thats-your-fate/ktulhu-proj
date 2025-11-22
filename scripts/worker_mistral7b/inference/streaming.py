@@ -13,7 +13,7 @@ def stream_answer(conn, uid, chat_id, tokenizer, model, device, final_prompt):
         **inputs,
         streamer=streamer,
         max_new_tokens=1024,
-        temperature=0.6,
+        temperature=0.7,
         top_p=0.9,
         do_sample=True,
         pad_token_id=tokenizer.eos_token_id,

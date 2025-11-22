@@ -8,7 +8,7 @@ import { waitForSocket } from "../utils/waitForSocket";
 import { log } from "../utils/logger";
 import { handleWorkerStream } from "./worker";
 import { withIdAndTimestamp } from "../utils/withIdAndTimestamp";
-import { fetchChatState } from "../stateMiddleware";
+
 
 export async function startSocketServer(unixPath: string, port: number) {
   await ensureKafka();
@@ -121,8 +121,7 @@ function extractUserText(input: any): string {
 
   //const chatId = data.chat_id || data.session_id || clientId;
 
-  // Fetch merged persistent state
-  const context_state = await fetchChatState(chatId);
+
 
   // Build worker payload including memory:
   const workerPayload = {
@@ -130,7 +129,6 @@ function extractUserText(input: any): string {
     chat_id: chatId,
     role: "user",
     text: userText.trim(),
-    context_state,            // <--- inject memory here
     model: data.model || "mistral-7b-lora",
     ts: Date.now(),
     session_id: data.session_id,

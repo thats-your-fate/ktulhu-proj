@@ -52,6 +52,9 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub python_bin: Option<String>,
+    
+    #[serde(default)]
+        pub root: String,    
 
     #[serde(default)]
     pub kafka: Option<KafkaConfig>,

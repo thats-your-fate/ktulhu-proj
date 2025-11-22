@@ -1,8 +1,42 @@
 import json
 from ..pipeline.search_router import route_request
-from ..summarizer_delta import generate_summary_delta
 from .streaming import stream_answer
 from ..net.conn import send_event, send_system
+
+
+def run_raw_generation(prompt, tokenizer, model, device):
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+
+    output = model.generate(
+        **inputs,
+        max_new_tokens=512,
+        do_sample=True,
+        temperature=0.7,
+        top_p=0.9,
+        eos_token_id=tokenizer.eos_token_id,
+        pad_token_id=tokenizer.eos_token_id,
+    )
+
+    text = tokenizer.decode(output[0], skip_special_tokens=True)
+    return text
+
+
+def generate_full_answer(tokenizer, model, device, prompt):
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
+
+    output_ids = model.generate(
+        **inputs,
+        max_new_tokens=512,
+        do_sample=True,
+        temperature=0.7,
+        top_p=0.9,
+        eos_token_id=tokenizer.eos_token_id,
+        pad_token_id=tokenizer.eos_token_id,
+    )
+
+    text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+    return text
+
 
 
 def extract_user_prompt(req):
@@ -29,7 +63,8 @@ def extract_user_prompt(req):
     return str(raw)
 
 
-def handle_request(prompt, conn, uid, tokenizer, model, device, chat_id):
+def handle_request(prompt, conn, uid, tokenizer, model, device, chat_id, stream=True):
+
 
     send_system(conn, uid, chat_id, " Receiving request…")
 
@@ -42,31 +77,9 @@ def handle_request(prompt, conn, uid, tokenizer, model, device, chat_id):
 
     send_system(conn, uid, chat_id, " Extracting user message…")
     user_prompt = extract_user_prompt(req)
-    send_system(conn, uid, chat_id, f"🗣️ User said: {user_prompt}")
 
-    # ---------------------------------------------------------
-    # 1. GENERATE MEMORY DELTA (intent, facts, summary)
-    # ---------------------------------------------------------
-    send_system(conn, uid, chat_id, " Generating memory delta…")
-    delta = generate_summary_delta(
-        message=user_prompt,
-        old_state={},     # we no longer use Node-side memory
-        tokenizer=tokenizer,
-        model=model,
-        device=device
-    )
-    send_system(conn, uid, chat_id, f"🧩Delta generated: {delta}")
 
-    # ---------------------------------------------------------
-    # 2. SEND TO NODE (Node forwards to persistence API)
-    # ---------------------------------------------------------
-    send_system(conn, uid, chat_id, " Sending memory delta to Node…")
-    send_event(conn, {"id": uid, "state_delta": delta})
-    send_system(conn, uid, chat_id, " Delta forwarded to persistence server.")
-
-    # ---------------------------------------------------------
-    # 3. BUILD FINAL PROMPT USING PERSISTENCE MEMORY
-    # ---------------------------------------------------------
+    # 3. FINAL PROMPT
     final_prompt, summary = route_request(
         user_prompt,
         tokenizer,
@@ -76,12 +89,8 @@ def handle_request(prompt, conn, uid, tokenizer, model, device, chat_id):
         uid,
         chat_id
     )
-
     send_event(conn, {"id": uid, "summary": summary})
     send_system(conn, uid, chat_id, f" Updated summary: {summary}")
 
-    # ---------------------------------------------------------
-    # 4. STREAM ANSWER
-    # ---------------------------------------------------------
+    # 4. STREAM ANSWER (original behavior)
     stream_answer(conn, uid, chat_id, tokenizer, model, device, final_prompt)
-

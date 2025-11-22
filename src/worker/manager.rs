@@ -1,18 +1,29 @@
-use crate::config::{AppConfig, NodeProcessConfig};
-use crate::worker::Worker;
-use crate::util::process_registry::ProcessRegistry;
+    use crate::config::{AppConfig, NodeProcessConfig};
+    use crate::worker::Worker;
+    use crate::util::process_registry::ProcessRegistry;
 
-use std::path::PathBuf;
-use std::process::Stdio;
-use std::sync::Arc;
-use tokio::process::Command;
-use tracing::{info, warn};
-use tokio::sync::Mutex;
+    use std::path::PathBuf;
+    use std::process::Stdio;
+    use std::sync::Arc;
+    use tokio::process::Command;
+    use tokio::sync::Mutex;
 
-/// 🧩 Spawns all Python workers from config
-pub async fn spawn_workers_from_config(cfg: &AppConfig, registry: Arc<ProcessRegistry>) -> Vec<Worker> {
+
+
+
+    ///  Spawns all Python workers from config
+pub async fn spawn_workers_from_config(
+    cfg: &AppConfig,
+    registry: Arc<ProcessRegistry>
+) -> Vec<Worker> {
+
     let mut workers = Vec::new();
-    let scripts_dir = PathBuf::from("/srv/mistral/ktulhuUpgarade/scripts");
+
+    let root = PathBuf::from(&cfg.root);
+
+    let scripts_dir = root.join("scripts");
+
+
 
     for w in &cfg.workers {
         let script_name = w.script.clone().unwrap_or_else(|| {
@@ -29,19 +40,22 @@ pub async fn spawn_workers_from_config(cfg: &AppConfig, registry: Arc<ProcessReg
         });
 
         let script_path = scripts_dir.join(&script_name);
+
+        let python_bin = cfg.python_bin.clone()
+            .unwrap_or_else(|| root.join(".venv/bin/python").display().to_string());
+
+        // remove old socket
         let _ = std::fs::remove_file(&w.socket);
 
-        info!(
-            "🚀 Spawning `{}` using `{}` (model: {}, GPU {})",
-            w.name, script_path.display(), w.model, w.gpu
+        tracing::info!(
+            "🚀 Spawning worker {} using Python={} Script={} Model={}",
+            w.name,
+            python_bin,
+            script_path.display(),
+            w.model
         );
 
-        let python_bin = cfg
-            .python_bin
-            .clone()
-            .unwrap_or_else(|| "/srv/mistral/ktulhuUpgarade/.venv/bin/python".to_string());
-
-        let mut cmd = Command::new(python_bin);
+        let mut cmd = Command::new(&python_bin);
         cmd.arg(&script_path)
             .arg(&w.socket)
             .arg(&w.model)
@@ -52,57 +66,54 @@ pub async fn spawn_workers_from_config(cfg: &AppConfig, registry: Arc<ProcessReg
             .env("CUDA_VISIBLE_DEVICES", &w.gpu);
 
         let child = Arc::new(Mutex::new(
-            cmd.spawn().unwrap_or_else(|e| panic!("❌ Failed to spawn {}: {}", w.name, e)),
+            cmd.spawn().unwrap_or_else(|e| {
+                panic!("❌ Failed to spawn worker {}: {}", w.name, e)
+            })
         ));
+
         registry.add(child.clone()).await;
-
-        let worker = Worker {
-    name: w.name.clone(),
-    socket_path: w.socket.clone(),
-    process: child.clone(), 
-};
-
-info!(
-    "Spawned worker {} at {} (process: {:?})",
-    worker.name,
-    worker.socket_path,
-    worker.process
-);
-
-workers.push(worker);
 
         workers.push(Worker {
             name: w.name.clone(),
             socket_path: w.socket.clone(),
             process: child,
         });
-
     }
-
 
     workers
 }
 
-/// 🧠 Optional Node.js orchestration process
-pub async fn spawn_node_process_from_config(cfg: &AppConfig, registry: Arc<ProcessRegistry>) {
-    if let Some(node_cfg) = &cfg.node_process {
-        spawn_node_process(node_cfg, registry).await;
+
+pub async fn spawn_node_process_from_config(
+    app: &AppConfig,
+    registry: Arc<ProcessRegistry>
+) {
+    if let Some(node_cfg) = &app.node_process {
+        spawn_node_process(node_cfg, app, registry).await;
     } else {
         tracing::info!("ℹ️ No Node.js process configured.");
     }
 }
 
-/// 🧩 Launch Node.js proxy/orchestrator
-pub async fn spawn_node_process(cfg: &NodeProcessConfig, registry: Arc<ProcessRegistry>) {
-    let cwd = cfg.nodecwd.clone().unwrap_or_else(|| "/srv/mistral/ktulhuUpgarade/node/dist".into());
-    let script_path = PathBuf::from(&cwd).join(&cfg.script);
 
-    info!(
-        "🧠 Spawning Node.js process `{}` -> `{}` with sockets: {:?}",
-        cfg.name, script_path.display(), cfg.sockets
-    );
+pub async fn spawn_node_process(
+    cfg: &NodeProcessConfig,
+    app: &AppConfig,
+    registry: Arc<ProcessRegistry>,
+){
 
-    let local_node = PathBuf::from("./node-v22-linux-x64/bin/node");
+let root = PathBuf::from(&app.root);
+
+let cwd = cfg.nodecwd
+    .as_ref()
+    .map(PathBuf::from)
+    .unwrap_or_else(|| root.join("node/dist"));
+
+let script_path = cwd.join(&cfg.script);
+
+
+    let local_node = root.join("node-v22-linux-x64/bin/node");
+
     let mut cmd = if local_node.exists() {
         Command::new(local_node)
     } else {
@@ -116,38 +127,39 @@ pub async fn spawn_node_process(cfg: &NodeProcessConfig, registry: Arc<ProcessRe
         .stderr(Stdio::inherit())
         .current_dir(&cwd);
 
-    // 🧩 Pass custom environment variables
+    // custom env vars from config
     if let Some(envs) = &cfg.env {
         for (k, v) in envs {
             cmd.env(k, v);
         }
     }
 
-    // 🌐 Inject tunnel from config.json as PUBLIC_TUNNEL
+    // tunnel injection
     if let Some(tunnel) = &cfg.tunnel {
         cmd.env("PUBLIC_TUNNEL", tunnel);
-        info!("🌐 Injected PUBLIC_TUNNEL={}", tunnel);
-    } else {
-        warn!("⚠️ No tunnel configured for Node process — will use quick/ephemeral mode.");
+        tracing::info!("🌐 PUBLIC_TUNNEL={}", tunnel);
     }
 
     let child = Arc::new(Mutex::new(
         cmd.spawn().unwrap_or_else(|e| {
-            panic!("❌ Failed to spawn Node.js process `{}`: {}", cfg.name, e)
-        }),
+            panic!("❌ Failed to spawn Node.js process {}: {}", cfg.name, e)
+        })
     ));
+
     registry.add(child.clone()).await;
 
     let name = cfg.name.clone();
-    let child_for_wait = child.clone();
 
     tokio::spawn(async move {
-        let mut guard = child_for_wait.lock().await;
+        let mut guard = child.lock().await;
         match guard.wait().await {
-            Ok(status) if status.success() => info!("✅ Node `{}` exited normally", name),
-            Ok(status) => tracing::error!("❌ Node `{}` exited with {:?}", name, status),
-            Err(e) => tracing::error!("❌ Failed to wait on `{}`: {}", name, e),
+            Ok(status) if status.success() =>
+                tracing::info!("🟢 Node `{}` exited normally", name),
+            Ok(status) =>
+                tracing::error!("❌ Node `{}` exited with status: {:?}", name, status),
+            Err(e) =>
+                tracing::error!("❌ Failed to wait on Node `{}`: {}", name, e),
         }
     });
-
 }
+

@@ -2,6 +2,7 @@ import requests
 
 MEMORY_API = "https://persistence.ktulhu.com/state-delta/history"
 
+
 def fetch_memory(chat_id: str):
     if not chat_id:
         return {"intents": [], "facts": [], "summary": ""}
@@ -11,20 +12,31 @@ def fetch_memory(chat_id: str):
         if not res.ok:
             return {"intents": [], "facts": [], "summary": ""}
 
-        history = res.json().get("history", [])
-        intents, facts, summary = [], [], ""
+        data = res.json()
+        deltas = data.get("history", [])
 
-        for entry in history:
-            delta = entry.get("state_delta", {})
+        intents = []
+        facts = []
+        summary = ""
 
-            if "user_intent" in delta:
+        for delta in deltas:
+            # 1) direct fields
+            if delta.get("user_intent"):
                 intents.append(delta["user_intent"])
 
-            if "message_summary" in delta:
+            if delta.get("new_facts"):
+                facts.extend(delta["new_facts"])
+
+            if delta.get("message_summary"):
                 summary = delta["message_summary"]
 
-            if "fact" in delta:
-                facts.append(delta["fact"])
+            # 2) merged state payload
+            state = delta.get("state")
+            if state:
+                intents.extend(state.get("intents", []))
+                facts.extend(state.get("facts", []))
+                if state.get("summary"):
+                    summary = state["summary"]
 
         return {
             "intents": intents,

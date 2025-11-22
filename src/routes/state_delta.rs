@@ -6,7 +6,6 @@ use axum::{
 };
 use serde_json::json;
 
-
 use crate::routes::state::RouteState;
 use crate::storage::StateStore;
 
@@ -24,17 +23,25 @@ async fn list_last(State(state): State<RouteState>) -> impl IntoResponse {
 
     for chat_id in chats {
         if let Ok(Some(delta)) = StateStore::load_last_for_chat(&state.storage, &chat_id) {
+
+            // ✔ Build JSON according to NEW StateDelta struct
             out.push(json!({
                 "chat_id": chat_id,
-                "state_delta": delta.state_delta,
-                "ts": delta.ts
+                "ts": delta.ts,
+                "last_processed_ts": delta.last_processed_ts,
+
+                "intent": delta.intent,
+                "facts": delta.facts,
+                "summary": delta.summary,
+
+                // This contains the merged ChatState from HistoryWorker
+                "state": delta.state
             }));
         }
     }
 
     Json(json!({ "chats": out }))
 }
-
 
 pub async fn history(
     State(state): State<RouteState>,
@@ -44,13 +51,12 @@ pub async fn history(
 
     let list = map
         .get(&chat_id)
-        .cloned()                // Vec<StateDelta>
-        .unwrap_or_default();
+        .cloned()
+        .unwrap_or_else(|| vec![]);
 
     Json(json!({
         "chat_id": chat_id,
-        "history": list,
+        "history": list,          // <-- VALID ARRAY
         "count": list.len()
     }))
 }
-

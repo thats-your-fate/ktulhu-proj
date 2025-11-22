@@ -2,63 +2,68 @@
 
 import json
 import re
-
-DELTA_PROMPT_HEADER = """
-You are an AI that produces structured JSON deltas for conversational memory.
-
-Given:
-1. The user's latest message.
-2. The previous conversation state (JSON object).
-
-Output:
-A *JSON delta* describing ONLY the new information from this message.
-
-Rules:
-- Do NOT repeat information already present in old_state.
-- Include only NEW entities, facts, preferences, goals, or memory-relevant details.
-- Always produce VALID JSON.
-- Keys to use when applicable:
-    - "new_entities": []
-    - "new_facts": []
-    - "new_preferences": []
-    - "user_intent": ""
-    - "message_summary": ""
-- If nothing new exists, produce an empty object {}.
-
-Format:
-<JSON ONLY — no explanation>
-""".strip()
+import time
 
 
-def clean_json_output(text: str):
-    """
-    Extract valid JSON from model output.
-    """
-    match = re.search(r"\{[\s\S]*\}", text)
-    if not match:
-        return {}
-    try:
-        return json.loads(match.group(0))
-    except Exception:
+def extract_json(text: str):
+    """Extracts the first valid JSON object by counting braces."""
+    start = text.find("{")
+    if start == -1:
         return {}
 
+    depth = 0
+    for i in range(start, len(text)):
+        char = text[i]
 
-def generate_summary_delta(message: str, old_state: dict,
-                           tokenizer, model, device) -> dict:
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                json_str = text[start:i+1]
+                try:
+                    return json.loads(json_str)
+                except Exception:
+                    return {}
+    return {}
+
+
+def build_extraction_prompt(chat_id: str, ts: int, message: str, old_state: dict):
+
+
+    return f"""
+    You are a memory extraction engine.
+
+    Return ONLY this JSON format:
+
+    {{
+    "summary": "",
+    "intent": null,
+    "facts": []
+    }}
+
+    Rules:
+    - summary = 1–2 sentences summarizing the user message.
+    - intent = user's goal, or null.
+    - facts = list of small fact objects OR [].
+    - DO NOT add fields.
+    - DO NOT invent metadata.
+    - DO NOT wrap inside another object.
+    - DO NOT output text before or after JSON.
+
+    User message:
+    {message}
+
+    JSON OUTPUT ONLY:
     """
-    Fully safe delta generation, with NO .format() usage.
-    """
 
-    # Convert old_state cleanly to pretty JSON
-    old_state_json = json.dumps(old_state, indent=2)
 
-    # Build prompt entirely with f-strings — cannot crash on braces
-    prompt = (
-        f"{DELTA_PROMPT_HEADER}\n\n"
-        f"Message:\n{message}\n\n"
-        f"Old state:\n{old_state_json}\n\n"
-        f"JSON delta:\n"
-    )
+
+
+def generate_state_delta(chat_id: str, message: str, ts: int,
+                         old_state: dict, tokenizer, model, device) -> dict:
+    """Generate a COMPLETE StateDelta JSON (no wrapper)."""
+    prompt = build_extraction_prompt(chat_id, ts, message, old_state)
 
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
 
@@ -67,7 +72,7 @@ def generate_summary_delta(message: str, old_state: dict,
         max_new_tokens=256,
         temperature=0.2,
         top_p=0.9,
-        do_sample=True,
+        do_sample=False,
         pad_token_id=tokenizer.eos_token_id,
     )
 
@@ -76,4 +81,5 @@ def generate_summary_delta(message: str, old_state: dict,
         skip_special_tokens=True,
     )
 
-    return clean_json_output(decoded)
+    print(decoded)
+    return extract_json(decoded)

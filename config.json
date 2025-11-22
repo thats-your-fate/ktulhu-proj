@@ -1,5 +1,5 @@
 {
-"python_bin": "/srv/mistral/ktulhuUpgarade/.venv/bin/python",
+"python_bin": "/srv/mistral/ktulhuMain/.venv/bin/python",
   "workers": [
     {
       "name": "reasoning",
@@ -8,6 +8,7 @@
       "model": "mistralai/Mistral-7B-Instruct-v0.2"
     } 
   ],
+    "root": "/srv/mistral/ktulhuMain",
   "node_process": {
     "name": "index",
     "script": "index.js",
@@ -16,8 +17,8 @@
       ["NODE_ENV", "production"],
       ["MAX_CONCURRENCY", "3"]
     ],
-    "cwd": "/srv/mistral/ktulhuUpgarade/scripts",
-    "nodecwd": "/srv/mistral/ktulhuUpgarade/node/dist",
+    "cwd": "/srv/mistral/ktulhuMain/scripts",
+    "nodecwd": "/srv/mistral/ktulhuMain/node/dist",
     "tunnel": "https://inference.ktulhu.com"
 
   },

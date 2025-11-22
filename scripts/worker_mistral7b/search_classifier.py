@@ -35,7 +35,7 @@ def ask_need_search(question: str, tokenizer, model, device) -> bool:
     # Generate: allow ONLY 1–2 tokens
     out = model.generate(
         **inputs,
-        max_new_tokens=2,
+        max_new_tokens=5,
         temperature=0.0,
         top_p=1.0,
         do_sample=False,
